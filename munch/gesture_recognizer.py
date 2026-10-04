@@ -9,7 +9,7 @@ below the gate can act while MUNCH is "watching" (disarmed).
 import math
 import time
 
-from munch import config
+from munch import bindings, config
 
 WRIST = 0
 THUMB_IP, THUMB_TIP = 3, 4
@@ -42,6 +42,12 @@ def _finger_extended(landmarks, tip_idx, pip_idx, ratio=1.15):
     return _dist(wrist, tip) > _dist(wrist, pip) * ratio
 
 
+_PINCH_SOURCES = {
+    "index": (INDEX_TIP, INDEX_PIP),
+    "middle": (MIDDLE_TIP, MIDDLE_PIP),
+}
+
+
 def _fingers_spread(landmarks):
     """True if adjacent fingertips (index-middle-ring-pinky) are clearly
     apart, not just extended-but-together — distinguishes a deliberate
@@ -59,6 +65,8 @@ def _fingers_spread(landmarks):
 
 class GestureRecognizer:
     def __init__(self):
+        self.bindings = bindings.load_bindings()  # {"left": "index"|"middle", "right": the other}
+
         self.left_pinch_active = False
         self.left_pinch_start = 0.0
         self.left_dragging = False
@@ -169,8 +177,14 @@ class GestureRecognizer:
             self.current_gesture = "idle"
             return []
 
-        left_dist = _dist(thumb, index_tip)
-        right_dist = _dist(thumb, middle_tip)
+        # Which physical pinch (thumb+index vs thumb+middle) drives left
+        # vs right click is configurable (see munch/bindings.py); resolve
+        # that here so the rest of the state machine just deals in
+        # "left"/"right" action slots like before.
+        left_tip, left_pip = _PINCH_SOURCES[self.bindings["left"]]
+        right_tip, right_pip = _PINCH_SOURCES[self.bindings["right"]]
+        left_dist = _dist(thumb, landmarks[left_tip])
+        right_dist = _dist(thumb, landmarks[right_tip])
 
         # --- Left pinch (click / drag) ---
         if self.left_pinch_active:
@@ -187,7 +201,7 @@ class GestureRecognizer:
         left_approaching = (
             stable
             and left_dist < config.PINCH_ON_THRESHOLD
-            and not _finger_extended(landmarks, INDEX_TIP, INDEX_PIP)
+            and not _finger_extended(landmarks, left_tip, left_pip)
         )
         self._left_pinch_frames = self._left_pinch_frames + 1 if left_approaching else 0
 
@@ -211,7 +225,7 @@ class GestureRecognizer:
         right_approaching = (
             stable
             and right_dist < config.PINCH_ON_THRESHOLD
-            and not _finger_extended(landmarks, MIDDLE_TIP, MIDDLE_PIP)
+            and not _finger_extended(landmarks, right_tip, right_pip)
         )
         self._right_pinch_frames = self._right_pinch_frames + 1 if right_approaching else 0
 
@@ -284,6 +298,10 @@ class GestureRecognizer:
         direction = 1.0 if offset > 0 else -1.0
         ticks = -direction * speed  # moving hand down -> scroll down (negative ticks)
         return [("scroll", ticks)]
+
+    def set_bindings(self, new_bindings):
+        if bindings.is_valid(new_bindings):
+            self.bindings = dict(new_bindings)
 
     def reset_wake(self):
         """Force back to disarmed/watching with a clean slate. Used when

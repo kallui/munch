@@ -15,24 +15,15 @@ from munch.gesture_recognizer import GestureRecognizer, palm_center
 from munch.hand_tracker import HandTracker
 from munch.mouse_controller import MouseController
 from munch.overlay import CalibrationOverlay, CursorHud
+from munch.settings_window import SettingsWindow, detect_cameras
+from munch.theme import (
+    BG, BLUE, BORDER_W, FONT_BUTTON, FONT_STATUS, FONT_SUB, FONT_TITLE,
+    GREEN, INK, PINK, SHADOW_OFFSET, YELLOW,
+)
 
-# --- Neo-brutalist palette ---
-BG = "#F5F1E6"       # paper background
-INK = "#111111"      # near-black, used for borders/text
-YELLOW = "#FFD400"
-PINK = "#FF3DAE"
-BLUE = "#3A86FF"
-GREEN = "#06D6A0"
-RED = "#FF3864"
-PURPLE = "#8338EC"
-
-FONT_TITLE = ("Segoe UI Black", 26, "bold")
-FONT_SUB = ("Segoe UI", 10, "bold")
-FONT_STATUS = ("Consolas", 12, "bold")
-FONT_BUTTON = ("Segoe UI", 16, "bold")
-
-BORDER_W = 4
-SHADOW_OFFSET = 6
+# Preview panel + status/toggle strips all share this width for a tidy,
+# compact window instead of the earlier oversized layout.
+PANEL_W = config.FRAME_WIDTH
 
 
 def _shadow_panel(parent, width, height, bg):
@@ -64,17 +55,23 @@ class MunchApp:
         self.screen_w = root.winfo_screenwidth()
         self.screen_h = root.winfo_screenheight()
 
+        self._settings = settings.load()
+
         self.tracker = HandTracker()
         self.recognizer = GestureRecognizer()
         self.mouse = MouseController(self.screen_w, self.screen_h, zone=calibration.load_zone())
-        self.capture = cv2.VideoCapture(config.CAMERA_INDEX)
+        self.camera_index = self._settings.get("camera_index", config.CAMERA_INDEX)
+        self.capture = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
         self.cursor_hud = CursorHud(root)
 
-        self._settings = settings.load()
         self.munch_on = False
         self._last_frame_time = time.monotonic()
         self._fps = 0.0
         self._last_status_word = None
+        self._settings_window = None
+        self._available_cameras = None  # probed once, lazily, on first Settings open; cached after
+
+        self.show_overlay_var = tk.BooleanVar(value=self._settings.get("show_overlay", True))
 
         self.last_landmarks = None
         self._calibration_step = 0  # 0 = idle, 1 = awaiting corner 1, 2 = awaiting corner 2
@@ -84,88 +81,104 @@ class MunchApp:
         self._build_ui()
         self._loop()
 
+    def _build_settings_icon(self, parent):
+        """A flat, hand-drawn "sliders" icon — three adjustable rows with
+        knobs at different positions, the universal settings glyph — in
+        place of a gear character, which renders inconsistently across
+        fonts and never quite matched the rest of the app's flat,
+        geometric, bordered-shape visual language."""
+        size = 32
+        canvas = tk.Canvas(parent, width=size, height=size, bg=INK, highlightthickness=0, cursor="hand2")
+        for y, knob_x in ((10, 12), (16, 21), (22, 16)):
+            canvas.create_line(6, y, size - 6, y, fill=YELLOW, width=2)
+            canvas.create_oval(knob_x - 3, y - 3, knob_x + 3, y + 3, fill=YELLOW, outline=INK, width=1)
+        canvas.bind("<Button-1>", lambda _event: self._open_settings())
+        return canvas
+
     # ------------------------------------------------------------------
     def _build_ui(self):
-        outer = tk.Frame(self.root, bg=BG, padx=20, pady=20)
+        outer = tk.Frame(self.root, bg=BG, padx=14, pady=14)
         outer.pack()
 
-        # Header
-        header_container, header = _shadow_panel(outer, 600, 90, YELLOW)
-        header_container.pack(pady=(0, 16))
-        tk.Label(header, text="MUNCH", font=FONT_TITLE, bg=YELLOW, fg=INK).pack(pady=(10, 0))
+        # Header (with a small settings gear in the corner). Height is
+        # sized from Impact's actual measured line height (56px at this
+        # size) + the subtitle's line + padding — Impact is a much taller
+        # face than a normal Segoe UI weight, so a fixed guess clips the
+        # subtitle under it if the title font ever changes again.
+        header_container, header = _shadow_panel(outer, PANEL_W, 96, YELLOW)
+        header_container.pack(pady=(0, 10))
+
+        header_text = tk.Frame(header, bg=YELLOW)
+        header_text.place(x=10, y=0, relheight=1.0)
+        tk.Label(header_text, text="MUNCH", font=FONT_TITLE, bg=YELLOW, fg=INK).pack(anchor="w", pady=(8, 0))
         tk.Label(
-            header,
-            text="MOTION USER NAVIGATION & CURSOR HANDLING",
+            header_text, text="Motion User Navigation & Cursor Handling",
             font=FONT_SUB, bg=YELLOW, fg=INK,
-        ).pack()
+        ).pack(anchor="w")
+
+        self._build_settings_icon(header).place(relx=1.0, x=-10, rely=0.5, anchor="e")
 
         # Webcam preview
         preview_container, preview_panel = _shadow_panel(
             outer, config.FRAME_WIDTH, config.FRAME_HEIGHT, INK
         )
-        preview_container.pack(pady=(0, 16))
+        preview_container.pack(pady=(0, 10))
         self.video_label = tk.Label(preview_panel, bg=INK, bd=0)
         self.video_label.place(x=0, y=0, width=config.FRAME_WIDTH, height=config.FRAME_HEIGHT)
 
-        # Status strip: a small LED (grey = watching, green = armed) plus
-        # a calm, rarely-changing status word and FPS — no raw per-frame
-        # gesture name here, since that changes every frame and just reads
-        # as noise.
-        status_container, status_panel = _shadow_panel(outer, 600, 44, BLUE)
-        status_container.pack(pady=(0, 16))
-        status_row = tk.Frame(status_panel, bg=BLUE)
-        status_row.pack(expand=True)
+        # One unified control card — status readout + the enable/disable
+        # action share a single bordered sticker (one shadow, proportioned
+        # to the whole card) instead of two separately-shadowed boxes.
+        # Stacking a thin status strip in its own full sticker made its
+        # border/shadow read as disproportionately heavy next to so little
+        # content; a thin INK divider between the two tiers reads as one
+        # deliberate card instead.
+        status_h, divider_h, button_h = 34, 3, 48
+        control_container, control_front = _shadow_panel(
+            outer, PANEL_W, status_h + divider_h + button_h, INK
+        )
+        control_container.pack()
 
-        self.status_led = tk.Canvas(status_row, width=16, height=16, bg=BLUE, highlightthickness=0)
-        self.status_led.pack(side="left", padx=(0, 8))
-        self._status_led_dot = self.status_led.create_oval(3, 3, 13, 13, fill="#888888", outline=INK)
+        status_frame = tk.Frame(control_front, bg=BLUE, width=PANEL_W, height=status_h)
+        status_frame.place(x=0, y=0)
+        status_row = tk.Frame(status_frame, bg=BLUE)
+        # Left-aligned with fixed padding, not centered — centering would
+        # shift the LED/text sideways every time the status word changes
+        # length ("DISABLED" vs "ACTIVE" vs "STANDBY"), making the LED
+        # jump around instead of sitting still.
+        status_row.place(x=14, rely=0.5, anchor="w")
+
+        self.status_led = tk.Canvas(status_row, width=14, height=14, bg=BLUE, highlightthickness=0)
+        self.status_led.pack(side="left", padx=(0, 7))
+        self._status_led_dot = self.status_led.create_oval(2, 2, 12, 12, fill="#888888", outline=INK)
 
         self.status_label = tk.Label(
-            status_row, text="WATCHING   FPS: 0.0",
+            status_row, text="STANDBY   FPS: 0.0",
             font=FONT_STATUS, bg=BLUE, fg=INK,
         )
         self.status_label.pack(side="left")
 
-        # Toggle button
-        toggle_container, toggle_panel = _shadow_panel(outer, 600, 64, PINK)
-        toggle_container.pack()
+        # Toggle button: ENABLE/DISABLE is the overall on/off; once
+        # enabled, the status tier above shows STANDBY until the wake
+        # gesture moves it to ACTIVE.
+        self._toggle_panel = tk.Frame(control_front, bg=PINK, width=PANEL_W, height=button_h)
+        self._toggle_panel.place(x=0, y=status_h + divider_h)
         self.toggle_button = tk.Button(
-            toggle_panel, text="▶  START MUNCH MODE", font=FONT_BUTTON,
+            self._toggle_panel, text="▶  ENABLE MUNCH", font=FONT_BUTTON,
             bg=PINK, fg=INK, activebackground=PINK, activeforeground=INK,
             relief="flat", bd=0, cursor="hand2", command=self._toggle,
         )
-        self.toggle_button.place(x=0, y=0, width=600, height=64)
-        self._toggle_panel = toggle_panel
-
-        # Calibrate button
-        calib_container, calib_panel = _shadow_panel(outer, 600, 56, PURPLE)
-        calib_container.pack(pady=(16, 0))
-        self.calib_button = tk.Button(
-            calib_panel, text="⌖  CALIBRATE REACH", font=FONT_BUTTON,
-            bg=PURPLE, fg="white", activebackground=PURPLE, activeforeground="white",
-            relief="flat", bd=0, cursor="hand2", command=self._on_calibrate_click,
-        )
-        self.calib_button.place(x=0, y=0, width=600, height=56)
-
-        # Overlay toggle
-        self.show_overlay_var = tk.BooleanVar(value=self._settings.get("show_overlay", True))
-        overlay_check = tk.Checkbutton(
-            outer, text="SHOW GESTURE OVERLAY ON CURSOR", variable=self.show_overlay_var,
-            command=self._on_overlay_setting_changed, font=FONT_SUB,
-            bg=BG, fg=INK, activebackground=BG, selectcolor=BG, bd=0,
-            highlightthickness=0,
-        )
-        overlay_check.pack(pady=(14, 0))
+        self.toggle_button.place(x=0, y=0, width=PANEL_W, height=button_h)
 
     def _toggle(self):
         self.munch_on = not self.munch_on
         if self.munch_on:
             self.mouse.reset_smoothing()
-            self.recognizer.reset_wake()  # always start a fresh session "watching"
-            self.toggle_button.configure(text="■  STOP MUNCH MODE", bg=GREEN)
+            self.recognizer.reset_wake()  # always start a fresh session in standby
+            self.toggle_button.configure(text="■  DISABLE MUNCH", bg=GREEN)
             self._toggle_panel.configure(bg=GREEN)
         else:
-            self.toggle_button.configure(text="▶  START MUNCH MODE", bg=PINK)
+            self.toggle_button.configure(text="▶  ENABLE MUNCH", bg=PINK)
             self._toggle_panel.configure(bg=PINK)
 
     def _on_overlay_setting_changed(self):
@@ -174,10 +187,39 @@ class MunchApp:
         if not self.show_overlay_var.get():
             self.cursor_hud.hide()
 
+    def _open_settings(self):
+        if self._settings_window is not None:
+            try:
+                self._settings_window.win.lift()
+                return
+            except tk.TclError:
+                self._settings_window = None
+        if self._available_cameras is None:
+            self._available_cameras = detect_cameras()
+        self._settings_window = SettingsWindow(
+            self.root, self.recognizer,
+            on_calibrate=self._on_calibrate_click,
+            show_overlay_var=self.show_overlay_var,
+            on_overlay_changed=self._on_overlay_setting_changed,
+            camera_index=self.camera_index,
+            available_cameras=self._available_cameras,
+            on_camera_change=self._switch_camera,
+        )
+
+    def _switch_camera(self, new_index):
+        if new_index == self.camera_index:
+            return
+        if self.capture.isOpened():
+            self.capture.release()
+        self.capture = cv2.VideoCapture(new_index, cv2.CAP_DSHOW)
+        self.camera_index = new_index
+        self._settings["camera_index"] = new_index
+        settings.save(self._settings)
+
     # ------------------------------------------------------------------
-    # Calibration: started by one button click, but both corners are
-    # confirmed with a quick thumb+index pinch (the same gesture as a
-    # left click) so you don't need to touch the app again mid-flow.
+    # Calibration: started from Settings, but both corners are confirmed
+    # with a quick thumb+index pinch (the same gesture as a left click)
+    # so you don't need to touch the app again mid-flow.
     def _on_calibrate_click(self):
         if self._calibration_step != 0:
             return
@@ -186,9 +228,8 @@ class MunchApp:
         self._calibration_step = 1
         self._calibration_overlay = CalibrationOverlay(self.root, on_cancel=self._cancel_calibration)
         self._calibration_overlay.set_text(
-            "QUICK PINCH (THUMB + INDEX)\nAT ONE CORNER OF YOUR COMFORTABLE REACH"
+            "Quick pinch (thumb + index) at the top-left\nof your comfortable reach."
         )
-        self.calib_button.configure(text="CALIBRATING… (ESC TO CANCEL)")
 
     def _cancel_calibration(self):
         self._calibration_step = 0
@@ -196,7 +237,6 @@ class MunchApp:
         if self._calibration_overlay:
             self._calibration_overlay.destroy()
             self._calibration_overlay = None
-        self.calib_button.configure(text="⌖  CALIBRATE REACH")
 
     def _handle_calibration_events(self, events):
         for event in events:
@@ -213,7 +253,7 @@ class MunchApp:
         if self._calibration_step == 1:
             self._calibration_step = 2
             self._calibration_overlay.set_text(
-                "CORNER 1 CAPTURED ✓\nNOW QUICK-PINCH AT THE OPPOSITE CORNER"
+                "Top-left captured. Now pinch at the bottom-right."
             )
             return
 
@@ -222,13 +262,12 @@ class MunchApp:
         if calibration.is_valid(zone):
             calibration.save_zone(zone)
             self.mouse.set_zone(zone)
-            self._calibration_overlay.set_text("✓  CALIBRATED")
+            self._calibration_overlay.set_text("Calibrated.")
         else:
-            self._calibration_overlay.set_text("CORNERS TOO CLOSE — TRY AGAIN")
+            self._calibration_overlay.set_text("Corners too close. Try again.")
 
         self._calibration_step = 0
         self._calibration_points = []
-        self.calib_button.configure(text="⌖  CALIBRATE REACH")
         self.root.after(900, self._close_calibration_overlay)
 
     def _close_calibration_overlay(self):
@@ -289,11 +328,11 @@ class MunchApp:
             self._fps += (instant_fps - self._fps) * 0.2
 
         if not self.munch_on:
-            led_color, word = "#888888", "MUNCH OFF"
+            led_color, word = "#888888", "DISABLED"
         elif self.recognizer.armed:
-            led_color, word = GREEN, "ARMED"
+            led_color, word = GREEN, "ACTIVE"
         else:
-            led_color, word = "#888888", "WATCHING"
+            led_color, word = YELLOW, "STANDBY"
 
         if word != self._last_status_word:
             self.status_led.itemconfig(self._status_led_dot, fill=led_color)

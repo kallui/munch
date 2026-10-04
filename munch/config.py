@@ -2,8 +2,8 @@
 
 # Camera
 CAMERA_INDEX = 0
-FRAME_WIDTH = 640
-FRAME_HEIGHT = 480
+FRAME_WIDTH = 400
+FRAME_HEIGHT = 300
 LOOP_INTERVAL_MS = 15  # Tkinter after() polling interval
 
 # MediaPipe Hands

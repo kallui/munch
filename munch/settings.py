@@ -1,11 +1,14 @@
-"""Loads/saves small user-facing toggles (currently just the gesture HUD)."""
+"""Loads/saves small user-facing toggles (the gesture HUD, which camera
+to use)."""
 
 import json
 import os
 
+from munch import config
+
 _SETTINGS_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "settings.json")
 
-_DEFAULTS = {"show_overlay": True}
+_DEFAULTS = {"show_overlay": True, "camera_index": config.CAMERA_INDEX}
 
 
 def load():

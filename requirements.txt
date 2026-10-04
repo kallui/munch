@@ -3,3 +3,4 @@ mediapipe
 pynput
 pillow
 numpy
+pygrabber

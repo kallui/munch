@@ -5,20 +5,18 @@ cursor to show MUNCH's state."""
 
 import tkinter as tk
 
-_KEY_COLOR = "#FF00FE"  # chroma-key background made transparent via -transparentcolor
+from munch.theme import GREEN, INK, PURPLE, YELLOW
 
-INK = "#111111"
-YELLOW = "#FFD400"
-GREEN = "#06D6A0"
+_KEY_COLOR = "#FF00FE"  # chroma-key background made transparent via -transparentcolor
 
 # (label, color) per gesture, matching the main window's sticker palette.
 # "wake_hold" isn't here — it gets the progress ring instead of a text tag.
 GESTURE_STYLES = {
     "armed": ("ARMED", GREEN),
     "left_pinch": ("CLICK", "#FF3DAE"),
-    "drag": ("DRAGGING", "#06D6A0"),
-    "right_pinch": ("RIGHT CLICK", "#8338EC"),
-    "right_drag": ("RIGHT DRAG", "#8338EC"),
+    "drag": ("DRAGGING", GREEN),
+    "right_pinch": ("RIGHT CLICK", PURPLE),
+    "right_drag": ("RIGHT DRAG", PURPLE),
     "scroll": ("SCROLLING", "#3A86FF"),
 }
 
@@ -136,11 +134,19 @@ class CalibrationOverlay:
         )
         self._sub.place(relx=0.5, rely=0.38, anchor="center")
 
-        self._tracker = tk.Frame(self._win, bg=INK, highlightbackground=YELLOW, highlightthickness=3)
-        self._tracker_label = tk.Label(
-            self._tracker, text="\U0001F446", font=("Segoe UI Emoji", 30), bg=INK, fg=YELLOW
+        # A flat bordered crosshair reticle — not an emoji, to stay
+        # consistent with the rest of the app's hard-edged, no-gradients,
+        # no-realistic-icons visual language.
+        self._tracker_size = 40
+        self._tracker = tk.Canvas(
+            self._win, width=self._tracker_size, height=self._tracker_size,
+            bg=INK, highlightthickness=0,
         )
-        self._tracker_label.pack(padx=8, pady=4)
+        mid = self._tracker_size // 2
+        self._tracker.create_oval(2, 2, self._tracker_size - 2, self._tracker_size - 2,
+                                   outline=YELLOW, width=3)
+        self._tracker.create_line(mid, 4, mid, self._tracker_size - 4, fill=YELLOW, width=2)
+        self._tracker.create_line(4, mid, self._tracker_size - 4, mid, fill=YELLOW, width=2)
 
         self._win.bind("<Escape>", lambda _event: on_cancel())
         self._win.focus_force()
@@ -152,7 +158,7 @@ class CalibrationOverlay:
         """norm_pos = (x, y) in 0-1 frame coords, or None if no hand seen."""
         if norm_pos is None:
             self._tracker.place_forget()
-            self._sub.configure(text="NO HAND DETECTED — move your hand into frame")
+            self._sub.configure(text="No hand detected. Move into frame.")
             return
         x, y = norm_pos
         self._tracker.place(x=x * self._w, y=y * self._h, anchor="center")
