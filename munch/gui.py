@@ -112,7 +112,7 @@ class MunchApp:
         header_text.place(x=10, y=0, relheight=1.0)
         tk.Label(header_text, text="MUNCH", font=FONT_TITLE, bg=YELLOW, fg=INK).pack(anchor="w", pady=(8, 0))
         tk.Label(
-            header_text, text="Motion User Navigation & Cursor Handling",
+            header_text, text="Motion-based User Navigation & Cursor Handling",
             font=FONT_SUB, bg=YELLOW, fg=INK,
         ).pack(anchor="w")
 
