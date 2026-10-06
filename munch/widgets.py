@@ -7,14 +7,60 @@ into the page, rather than the plain color-swap feedback used before
 this was adopted project-wide.
 """
 
+import time
 import tkinter as tk
 
 from PIL import Image, ImageColor, ImageDraw, ImageTk
 
+from munch import win_utils
 from munch.theme import BG, BORDER_RADIUS, BORDER_W, INK, SHADOW_OFFSET
 
 _HOVER_GREY = 150
 _HOVER_AMOUNT = 0.35
+
+TRANSITION_MS = 150  # the one transition length used app-wide: noticeable, never sluggish
+
+
+def tween(widget, step, duration_ms=TRANSITION_MS, on_done=None):
+    """Calls step(t) with t easing from 0 to 1 over duration_ms (~60fps,
+    ease-out, so motion starts quick and settles gently), then on_done().
+    Returns a cancel function — starting a new transition on the same
+    window should cancel the old one first, or both fight each frame."""
+    state = {"cancelled": False}
+    start = time.perf_counter()
+
+    def frame():
+        if state["cancelled"]:
+            return
+        t = min(1.0, (time.perf_counter() - start) * 1000 / duration_ms)
+        try:
+            step(1 - (1 - t) ** 3)
+            if t < 1.0:
+                widget.after(16, frame)
+            elif on_done is not None:
+                on_done()
+        except tk.TclError:
+            pass  # window destroyed mid-transition
+
+    frame()
+    return lambda: state.update(cancelled=True)
+
+
+def fade_in(win, duration_ms=TRANSITION_MS):
+    """Shows a (withdrawn) Toplevel by fading it in. Returns a cancel fn."""
+    win_utils.set_alpha(win, 0.0)
+    win.deiconify()
+    return tween(win, lambda t: win_utils.set_alpha(win, t), duration_ms)
+
+
+def fade_out(win, duration_ms=TRANSITION_MS, on_done=None):
+    """Fades a Toplevel out, then withdraws it. Returns a cancel fn."""
+    def finish():
+        win.withdraw()
+        win_utils.set_alpha(win, 1.0)
+        if on_done is not None:
+            on_done()
+    return tween(win, lambda t: win_utils.set_alpha(win, 1.0 - t), duration_ms, finish)
 
 
 def hover_tint(color, amount=_HOVER_AMOUNT, grey=_HOVER_GREY):
@@ -129,6 +175,10 @@ class RoundedButton:
 
     def set_color(self, color):
         self._color = color
+        self._redraw()
+
+    def set_icon(self, icon_image):
+        self._icon_image = icon_image
         self._redraw()
 
     def place(self, **kwargs):

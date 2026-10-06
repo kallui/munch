@@ -5,11 +5,12 @@ bold uppercase type. No gradients, no rounded corners, no glow.
 """
 
 import os
+import threading
 import time
 import tkinter as tk
 
 import cv2
-from PIL import Image, ImageTk
+from PIL import Image, ImageDraw, ImageFont, ImageTk
 
 from munch import calibration, config, icons, settings
 from munch.cheat_sheet import CheatSheet
@@ -19,12 +20,12 @@ from munch.keyboard_controller import KeyboardController
 from munch.keyboard_overlay import KeyboardOverlay
 from munch.mouse_controller import MouseController
 from munch.overlay import CalibrationOverlay, CursorHud
-from munch.settings_window import SettingsWindow, detect_cameras
+from munch.settings_window import SettingsWindow, detect_cameras, detect_microphones
 from munch.side_dock import SideDock
 from munch.speech_to_text import SpeechToText
 from munch.theme import (
     BG, BLUE, BORDER_W, FONT_BUTTON, FONT_STATUS, FONT_SUB, FONT_TITLE,
-    GREEN, INK, PINK, SHADOW_OFFSET, YELLOW,
+    GREEN, INK, MUTED, PINK, SHADOW_OFFSET, YELLOW,
 )
 from munch.widgets import RoundedButton, hover_tint
 
@@ -75,17 +76,20 @@ class MunchApp:
         self.recognizer = GestureRecognizer()
         self.mouse = MouseController(self.screen_w, self.screen_h, zone=calibration.load_zone())
         self.camera_index = self._settings.get("camera_index", config.CAMERA_INDEX)
-        self.capture = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
+        # The camera stays closed (light off, nothing captured) until it's
+        # actually needed — see _sync_camera.
+        self.capture = None
+        self._camera_opening = False
+        self._opened_camera = None  # (capture, index) handed over by the opener thread
         self.cursor_hud = CursorHud(root)
         self._set_window_icon()
 
         self.munch_on = False
-        self._last_frame_time = time.monotonic()
-        self._fps = 0.0
         self._last_status_word = None
         self._settings_window = None
         self._cheat_sheet = None
         self._available_cameras = None  # probed once, lazily, on first Settings open; cached after
+        self._available_mics = None  # probed once, lazily, on first Settings open; cached after
 
         self.show_overlay_var = tk.BooleanVar(value=self._settings.get("show_overlay", True))
 
@@ -96,7 +100,8 @@ class MunchApp:
 
         # Keyboard + dictation
         self.keyboard = KeyboardController()
-        self.speech = SpeechToText()
+        self.mic_device = self._settings.get("mic_device")
+        self.speech = SpeechToText(device=self.mic_device)
         self._keyboard_overlay = None
         self.side_dock = SideDock(root, self._toggle_keyboard, self._toggle_mic)
         self._dock_visible = False
@@ -173,6 +178,8 @@ class MunchApp:
         preview_container.pack(pady=(0, 10))
         self.video_label = tk.Label(preview_panel, bg=INK, bd=0)
         self.video_label.place(x=0, y=0, width=config.FRAME_WIDTH, height=config.FRAME_HEIGHT)
+        self._camera_off_photo = ImageTk.PhotoImage(self._camera_off_image())
+        self._show_camera_off()
 
         # One unified control card — status readout + the enable/disable
         # action share a single bordered sticker (one shadow, proportioned
@@ -201,7 +208,7 @@ class MunchApp:
         self._status_led_dot = self.status_led.create_oval(2, 2, 12, 12, fill="#888888", outline=INK)
 
         self.status_label = tk.Label(
-            status_row, text="STANDBY   FPS: 0.0",
+            status_row, text="DISABLED",
             font=FONT_STATUS, bg=BLUE, fg=INK,
         )
         self.status_label.pack(side="left")
@@ -221,6 +228,74 @@ class MunchApp:
         self.toggle_button.bind("<Button-1>", lambda _e: self._toggle())
         self.toggle_button.bind("<Enter>", lambda _e: self.toggle_button.config(bg=hover_tint(self._toggle_color)))
         self.toggle_button.bind("<Leave>", lambda _e: self.toggle_button.config(bg=self._toggle_color))
+
+    @staticmethod
+    def _camera_off_image():
+        img = Image.new("RGB", (config.FRAME_WIDTH, config.FRAME_HEIGHT), INK)
+        icon_size = 56
+        icon = icons.load_icon("camera-off", MUTED, icon_size)
+        img.paste(icon, ((img.width - icon_size) // 2, img.height // 2 - icon_size + 6), icon)
+        try:
+            font = ImageFont.truetype("bahnschrift.ttf", 16)
+        except OSError:
+            font = ImageFont.load_default()
+        ImageDraw.Draw(img).text(
+            (img.width // 2, img.height // 2 + 22), "Camera off", font=font, fill=MUTED, anchor="mt",
+        )
+        return img
+
+    def _show_camera_off(self):
+        self.video_label.configure(image=self._camera_off_photo)
+
+    # ------------------------------------------------------------------
+    # The camera only runs while it's actually needed — MUNCH enabled, or
+    # a calibration in progress — and is fully released otherwise, so the
+    # webcam light is off and nothing is captured while MUNCH is idle.
+    # Opening a webcam on Windows can block for up to a second, so it
+    # happens on a background thread instead of freezing the window.
+    def _camera_wanted(self):
+        return self.munch_on or self._calibration_step != 0
+
+    def _sync_camera(self):
+        opened = self._opened_camera
+        if opened is not None:
+            self._opened_camera = None
+            self._on_camera_opened(*opened)
+        if self._camera_wanted():
+            if self.capture is None and not self._camera_opening:
+                self._open_camera_async()
+        elif self.capture is not None:
+            self._release_camera()
+
+    def _open_camera_async(self):
+        self._camera_opening = True
+        index = self.camera_index
+
+        def open_camera():
+            # Only hands the result over via an attribute — Tk may only be
+            # touched from the main thread, so _sync_camera (which runs
+            # there every tick) picks it up rather than this thread calling
+            # back into Tk.
+            self._opened_camera = (cv2.VideoCapture(index, cv2.CAP_DSHOW), index)
+
+        threading.Thread(target=open_camera, daemon=True).start()
+
+    def _on_camera_opened(self, capture, index):
+        self._camera_opening = False
+        if not self._camera_wanted() or index != self.camera_index:
+            # Disabled, or switched to another device, while it was opening.
+            capture.release()
+            return
+        self.capture = capture
+        self._camera_fail_streak = 0
+
+    def _release_camera(self):
+        self.capture.release()
+        self.capture = None
+        self._camera_lost = False
+        self._camera_fail_streak = 0
+        self.last_landmarks = None
+        self._show_camera_off()
 
     def _toggle(self):
         self.munch_on = not self.munch_on
@@ -248,6 +323,8 @@ class MunchApp:
                 self._settings_window = None
         if self._available_cameras is None:
             self._available_cameras = detect_cameras()
+        if self._available_mics is None:
+            self._available_mics = detect_microphones()
         self._settings_window = SettingsWindow(
             self.root, self.recognizer, self.mouse,
             on_calibrate=self._on_calibrate_click,
@@ -256,16 +333,28 @@ class MunchApp:
             camera_index=self.camera_index,
             available_cameras=self._available_cameras,
             on_camera_change=self._switch_camera,
+            mic_device=self.mic_device,
+            available_mics=self._available_mics,
+            on_mic_change=self._switch_mic,
         )
 
     def _switch_camera(self, new_index):
         if new_index == self.camera_index:
             return
-        if self.capture.isOpened():
-            self.capture.release()
-        self.capture = cv2.VideoCapture(new_index, cv2.CAP_DSHOW)
         self.camera_index = new_index
         self._settings["camera_index"] = new_index
+        settings.save(self._settings)
+        if self.capture is not None:
+            # Drop the old device; _sync_camera reopens on the new one next tick.
+            self.capture.release()
+            self.capture = None
+
+    def _switch_mic(self, new_device):
+        if new_device == self.mic_device:
+            return
+        self.mic_device = new_device
+        self.speech.set_device(new_device)
+        self._settings["mic_device"] = new_device
         settings.save(self._settings)
 
     # ------------------------------------------------------------------
@@ -284,11 +373,22 @@ class MunchApp:
 
     def _toggle_mic(self):
         if self.speech.is_recording():
-            self.side_dock.set_mic_state("transcribing")
-            self.speech.stop_recording_and_transcribe(self._on_transcription_ready)
+            self._stop_mic()
         else:
-            self.speech.start_recording()
+            self.speech.start_recording(on_preview=self._on_preview)
             self.side_dock.set_mic_state("recording")
+
+    def _stop_mic(self):
+        self.side_dock.set_mic_state("transcribing")
+        self.speech.stop_recording_and_transcribe(self._on_transcription_ready)
+
+    def _on_preview(self, text):
+        # Called from the preview background thread — hop onto the Tk thread.
+        self.root.after(0, lambda: self._show_preview(text))
+
+    def _show_preview(self, text):
+        if self.speech.is_recording():  # a late preview after stop is stale; drop it
+            self.side_dock.set_caption(text)
 
     def _on_transcription_ready(self, text):
         # Called from the transcription background thread — hop back onto
@@ -319,6 +419,10 @@ class MunchApp:
             if self.speech.is_recording():
                 self.speech.stop_recording_and_transcribe(lambda _text: None)
                 self.side_dock.set_mic_state("idle")
+        elif self.speech.is_recording() and self.speech.should_auto_stop():
+            self._stop_mic()
+
+        self.side_dock.animate(self.speech.level)
 
     # ------------------------------------------------------------------
     # Calibration: started from Settings, but both corners are confirmed
@@ -381,7 +485,8 @@ class MunchApp:
 
     # ------------------------------------------------------------------
     def _loop(self):
-        ok, frame = self.capture.read()
+        self._sync_camera()
+        ok, frame = self.capture.read() if self.capture is not None else (False, None)
 
         if ok:
             self._camera_fail_streak = 0
@@ -408,7 +513,7 @@ class MunchApp:
                 # shouldn't take the whole app down — skip it and
                 # continue on the next tick.
                 pass
-        else:
+        elif self.capture is not None:
             self._camera_fail_streak += 1
             if self._camera_fail_streak >= _CAMERA_FAILURE_LIMIT:
                 self._camera_lost = True
@@ -423,9 +528,10 @@ class MunchApp:
         if now - self._last_reconnect_attempt < _CAMERA_RECONNECT_INTERVAL_MS / 1000:
             return
         self._last_reconnect_attempt = now
-        if self.capture.isOpened():
-            self.capture.release()
-        self.capture = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
+        # Drop the dead device; _sync_camera reopens it (in the background)
+        # on the next tick. _camera_lost stays set until frames flow again.
+        self.capture.release()
+        self.capture = None
 
     def _update_cursor_hud(self):
         show = (
@@ -451,17 +557,12 @@ class MunchApp:
         self._current_photo = photo  # keep a reference alive (avoid GC)
 
     def _update_status(self):
-        now = time.monotonic()
-        dt = now - self._last_frame_time
-        self._last_frame_time = now
-        if dt > 0:
-            instant_fps = 1.0 / dt
-            self._fps += (instant_fps - self._fps) * 0.2
-
         if self._camera_lost:
             led_color, word = "#FF3864", "CAMERA LOST"
         elif not self.munch_on:
             led_color, word = "#888888", "DISABLED"
+        elif self.capture is None:
+            led_color, word = YELLOW, "STARTING"
         elif self.recognizer.armed:
             led_color, word = GREEN, "ACTIVE"
         else:
@@ -469,13 +570,12 @@ class MunchApp:
 
         if word != self._last_status_word:
             self.status_led.itemconfig(self._status_led_dot, fill=led_color)
+            self.status_label.configure(text=word)
             self._last_status_word = word
-
-        self.status_label.configure(text=f"{word}   FPS: {self._fps:0.1f}")
 
     # ------------------------------------------------------------------
     def _on_close(self):
-        if self.capture.isOpened():
+        if self.capture is not None:
             self.capture.release()
         self.tracker.close()
         self.cursor_hud.destroy()

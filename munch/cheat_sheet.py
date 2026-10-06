@@ -5,6 +5,7 @@ stale hardcoded list."""
 import tkinter as tk
 
 from munch.theme import BG, INK
+from munch.widgets import fade_in
 
 FONT_HEADING = ("Segoe UI", 13, "bold")
 FONT_ROW = ("Segoe UI", 10)
@@ -23,6 +24,7 @@ _ACTION_ORDER = ("left", "right", "middle", "double")
 class CheatSheet:
     def __init__(self, master, recognizer):
         self.win = tk.Toplevel(master)
+        self.win.attributes("-alpha", 0.0)  # faded in once fully built, at the end of __init__
         self.win.title("MUNCH Gestures")
         self.win.configure(bg=BG)
         self.win.resizable(False, False)
@@ -45,6 +47,8 @@ class CheatSheet:
             self.win, text="Open Settings to rebind clicks or tune sensitivity.",
             font=("Segoe UI", 9), bg=BG, fg="#666666", wraplength=280, justify="left",
         ).pack(anchor="w", padx=16, pady=(6, 16))
+
+        fade_in(self.win)
 
     def _row(self, label_text, value_text):
         row = tk.Frame(self.win, bg=BG)

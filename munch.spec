@@ -13,7 +13,7 @@ from PyInstaller.utils.hooks import collect_all
 block_cipher = None
 
 _COLLECT_PACKAGES = [
-    "mediapipe", "cv2", "faster_whisper", "ctranslate2",
+    "mediapipe", "cv2", "faster_whisper", "ctranslate2", "onnxruntime",
     "sounddevice", "pygrabber", "pynput", "resvg_py", "win32gui", "win32con",
 ]
 

@@ -21,6 +21,7 @@ PINK = "#FF3DAE"
 BLUE = "#3A86FF"
 GREEN = "#06D6A0"
 PURPLE = "#8338EC"
+MUTED = "#8A8578"  # warm grey for secondary/pending text, matched to the paper background
 
 BORDER_W = 3
 SHADOW_OFFSET = 4

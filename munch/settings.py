@@ -8,7 +8,7 @@ from munch import config
 
 _SETTINGS_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "settings.json")
 
-_DEFAULTS = {"show_overlay": True, "camera_index": config.CAMERA_INDEX}
+_DEFAULTS = {"show_overlay": True, "camera_index": config.CAMERA_INDEX, "mic_device": None}
 
 
 def load():

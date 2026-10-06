@@ -14,7 +14,7 @@ import tkinter as tk
 from munch import bindings as bindings_module
 from munch import tuning as tuning_module
 from munch.theme import BG, BORDER_W, INK, PURPLE, YELLOW
-from munch.widgets import RoundedButton
+from munch.widgets import RoundedButton, fade_in
 
 FONT_HEADING = ("Segoe UI", 12, "bold")
 FONT_LABEL = ("Segoe UI", 10, "bold")
@@ -162,20 +162,39 @@ def detect_cameras():
     return [(0, "Camera 0")]
 
 
+def detect_microphones():
+    """Returns [(device_index_or_None, name), ...] for available
+    microphone (input-capable) devices, with "System Default" always
+    first — using sounddevice, already a dependency for recording itself,
+    so no new dependency is needed just to list devices."""
+    devices = [(None, "System Default")]
+    try:
+        import sounddevice as sd
+        for index, info in enumerate(sd.query_devices()):
+            if info.get("max_input_channels", 0) > 0:
+                devices.append((index, info["name"]))
+    except Exception:
+        pass
+    return devices
+
+
 class SettingsWindow:
     def __init__(
         self, master, recognizer, mouse, on_calibrate, show_overlay_var, on_overlay_changed,
         camera_index, available_cameras, on_camera_change,
+        mic_device, available_mics, on_mic_change,
     ):
         self.recognizer = recognizer
         self.mouse = mouse
         self._on_calibrate = on_calibrate
         self._on_camera_change = on_camera_change
+        self._on_mic_change = on_mic_change
         self._active_popup = None
         self._binding_state = dict(recognizer.bindings)  # action -> finger, live working copy
         self._action_btns = {}
 
         self.win = tk.Toplevel(master)
+        self.win.attributes("-alpha", 0.0)  # faded in once fully built, at the end of __init__
         self.win.title("MUNCH Settings")
         self.win.configure(bg=BG)
         self.win.resizable(False, False)
@@ -216,6 +235,16 @@ class SettingsWindow:
             "Device", list(self._camera_index_by_name.keys()), current_name, self._on_camera_select
         )
 
+        tk.Label(self.win, text="MICROPHONE", font=FONT_HEADING, bg=BG, fg=INK).pack(
+            anchor="w", padx=16, pady=(14, 6)
+        )
+        self._mic_device_by_name = {name: device for device, name in available_mics}
+        mic_names_by_device = {device: name for device, name in available_mics}
+        current_mic_name = mic_names_by_device.get(mic_device, available_mics[0][1])
+        self._dropdown_row(
+            "Device", list(self._mic_device_by_name.keys()), current_mic_name, self._on_mic_select
+        )
+
         tk.Label(self.win, text="DISPLAY", font=FONT_HEADING, bg=BG, fg=INK).pack(
             anchor="w", padx=16, pady=(14, 6)
         )
@@ -238,6 +267,8 @@ class SettingsWindow:
             self.win, btn_width, 34, color=PURPLE, on_click=self._calibrate_clicked,
             text="⌖  CALIBRATE", font=FONT_BUTTON, fg="white", bg=BG,
         ).pack(padx=16, pady=(0, 16))
+
+        fade_in(self.win)
 
     # ------------------------------------------------------------------
     def _dropdown_row(self, label_text, options, initial_value, on_select):
@@ -293,6 +324,7 @@ class SettingsWindow:
             popup.geometry(f"+{x}+{y}")
             popup.bind("<FocusOut>", lambda _e: self._close_popup())
             popup.focus_force()
+            fade_in(popup, 100)
             self._active_popup = popup
 
         btn.bind("<Button-1>", open_popup)
@@ -371,6 +403,9 @@ class SettingsWindow:
 
     def _on_camera_select(self, choice):
         self._on_camera_change(self._camera_index_by_name[choice])
+
+    def _on_mic_select(self, choice):
+        self._on_mic_change(self._mic_device_by_name[choice])
 
     def _calibrate_clicked(self):
         self.close()
