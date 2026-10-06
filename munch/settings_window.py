@@ -12,6 +12,7 @@ swap against yet, so they're shown as fixed rows rather than dropdowns.
 import tkinter as tk
 
 from munch import bindings as bindings_module
+from munch import custom_bindings as custom_bindings_module
 from munch import tuning as tuning_module
 from munch.theme import BG, BORDER_W, INK, PURPLE, YELLOW
 from munch.widgets import RoundedButton
@@ -107,6 +108,88 @@ class _SliderWidget:
         self.canvas.pack(**kwargs)
 
 
+class _KeyCapture:
+    """A "click to set key" field — captures the next real key/modifier
+    combo pressed anywhere in the Settings window, via KeyPress (and
+    tracking modifier state across KeyPress events, not event.state's
+    platform-specific bitmask) so it works for both a lone key and a
+    held-modifier combo. Only one capture can listen at a time; starting
+    a new one cancels whichever was previously listening."""
+
+    _MODIFIER_KEYSYMS = {
+        "Control_L": "ctrl", "Control_R": "ctrl",
+        "Alt_L": "alt", "Alt_R": "alt",
+        "Shift_L": "shift", "Shift_R": "shift",
+    }
+    _CAPTURABLE_SPECIAL = {"Return": "enter", "BackSpace": "backspace", "Tab": "tab", "space": "space"}
+
+    def __init__(self, parent, window, initial_keys, on_change, on_start=None):
+        self._window = window
+        self._on_change = on_change
+        self._on_start = on_start
+        self._listening = False
+        self._held_modifiers = []
+        self._bind_id = None
+        self._keys = initial_keys
+
+        self.label = tk.Label(
+            parent, text=self._format(initial_keys), font=FONT_VALUE, bg="white", fg=INK,
+            anchor="w", padx=8, pady=4, cursor="hand2",
+        )
+        _bordered(self.label)
+        self.label.bind("<Button-1>", self._start_listening)
+
+    def _format(self, keys):
+        return "+".join(keys) if keys else "Click to set key..."
+
+    def _start_listening(self, _event=None):
+        if self._listening:
+            return
+        if self._on_start:
+            self._on_start(self)
+        self._listening = True
+        self._held_modifiers = []
+        self.label.configure(text="Press keys...", bg=YELLOW)
+        self._bind_id = self._window.bind("<KeyPress>", self._on_key_press)
+
+    def cancel(self):
+        """Stop listening without completing a capture — called when a
+        different capture field starts, or this row is about to be
+        destroyed by a rebuild."""
+        if not self._listening:
+            return
+        self._listening = False
+        if self._bind_id is not None:
+            self._window.unbind("<KeyPress>", self._bind_id)
+            self._bind_id = None
+        try:
+            self.label.configure(text=self._format(self._keys), bg="white")
+        except tk.TclError:
+            pass  # widget already destroyed
+
+    def _on_key_press(self, event):
+        keysym = event.keysym
+        if keysym in self._MODIFIER_KEYSYMS:
+            name = self._MODIFIER_KEYSYMS[keysym]
+            if name not in self._held_modifiers:
+                self._held_modifiers.append(name)
+            return
+        if keysym in self._CAPTURABLE_SPECIAL:
+            key = self._CAPTURABLE_SPECIAL[keysym]
+        elif len(keysym) == 1:
+            key = keysym.lower()
+        else:
+            return  # unsupported key (Escape/F-keys/arrows/etc.) — keep listening
+        combo = self._held_modifiers + [key]
+        self.cancel()
+        self._keys = combo
+        self.label.configure(text=self._format(combo))
+        self._on_change(combo)
+
+    def pack(self, **kwargs):
+        self.label.pack(**kwargs)
+
+
 def _add_tooltip(widget, text):
     """A small themed popup on hover — Tk has no built-in tooltip."""
     state = {"win": None}
@@ -172,6 +255,7 @@ class SettingsWindow:
         self._on_calibrate = on_calibrate
         self._on_camera_change = on_camera_change
         self._active_popup = None
+        self._active_key_capture = None
         self._binding_state = dict(recognizer.bindings)  # action -> finger, live working copy
         self._action_btns = {}
 
@@ -180,7 +264,32 @@ class SettingsWindow:
         self.win.configure(bg=BG)
         self.win.resizable(False, False)
 
-        tk.Label(self.win, text="GESTURE BINDINGS", font=FONT_HEADING, bg=BG, fg=INK).pack(
+        container = tk.Canvas(self.win, bg=BG, highlightthickness=0)
+        scrollbar = tk.Scrollbar(self.win, orient="vertical", command=container.yview)
+        container.configure(yscrollcommand=scrollbar.set)
+        container.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        self._content = tk.Frame(container, bg=BG)
+        content_window = container.create_window((0, 0), window=self._content, anchor="nw")
+
+        def _on_content_configure(_event=None):
+            container.configure(scrollregion=container.bbox("all"))
+        self._content.bind("<Configure>", _on_content_configure)
+
+        def _on_canvas_configure(event):
+            container.itemconfigure(content_window, width=event.width)
+        container.bind("<Configure>", _on_canvas_configure)
+
+        def _on_mousewheel(event):
+            container.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        container.bind("<MouseWheel>", _on_mousewheel)
+        self._content.bind("<MouseWheel>", _on_mousewheel)
+
+        screen_h = self.win.winfo_screenheight()
+        self.win.geometry(f"420x{min(700, screen_h - 140)}")
+
+        tk.Label(self._content, text="GESTURE BINDINGS", font=FONT_HEADING, bg=BG, fg=INK).pack(
             anchor="w", padx=16, pady=(16, 6)
         )
         for action in _ACTION_ORDER:
@@ -193,20 +302,20 @@ class SettingsWindow:
         self._fixed_row("Wake / arm", "Open palm, spread")
 
         self.win.update_idletasks()
-        btn_width = self.win.winfo_reqwidth() - 32
+        btn_width = 368  # 420 window width, minus padding, minus room for the scrollbar
         RoundedButton(
-            self.win, btn_width, 34, color="#DDDDDD", on_click=self._reset_default,
+            self._content, btn_width, 34, color="#DDDDDD", on_click=self._reset_default,
             text="RESET TO DEFAULT PRESET", font=FONT_BUTTON, bg=BG,
         ).pack(padx=16, pady=(10, 18))
 
-        tk.Label(self.win, text="SENSITIVITY", font=FONT_HEADING, bg=BG, fg=INK).pack(
+        tk.Label(self._content, text="SENSITIVITY", font=FONT_HEADING, bg=BG, fg=INK).pack(
             anchor="w", padx=16, pady=(0, 6)
         )
         self._tuning_state = dict(recognizer.tuning)
         for key, label, lo, hi, res, fmt in _SLIDERS:
             self._slider_row(key, label, lo, hi, res, fmt)
 
-        tk.Label(self.win, text="CAMERA", font=FONT_HEADING, bg=BG, fg=INK).pack(
+        tk.Label(self._content, text="CAMERA", font=FONT_HEADING, bg=BG, fg=INK).pack(
             anchor="w", padx=16, pady=(14, 6)
         )
         self._camera_index_by_name = {name: i for i, name in available_cameras}
@@ -216,16 +325,16 @@ class SettingsWindow:
             "Device", list(self._camera_index_by_name.keys()), current_name, self._on_camera_select
         )
 
-        tk.Label(self.win, text="DISPLAY", font=FONT_HEADING, bg=BG, fg=INK).pack(
+        tk.Label(self._content, text="DISPLAY", font=FONT_HEADING, bg=BG, fg=INK).pack(
             anchor="w", padx=16, pady=(14, 6)
         )
         tk.Checkbutton(
-            self.win, text="Show gesture overlay on cursor", variable=show_overlay_var,
+            self._content, text="Show gesture overlay on cursor", variable=show_overlay_var,
             command=on_overlay_changed, font=FONT_VALUE,
             bg=BG, fg=INK, activebackground=BG, selectcolor=BG, bd=0, highlightthickness=0,
         ).pack(anchor="w", padx=16, pady=(0, 18))
 
-        calib_heading = tk.Frame(self.win, bg=BG)
+        calib_heading = tk.Frame(self._content, bg=BG)
         calib_heading.pack(anchor="w", padx=16, pady=(0, 6))
         tk.Label(calib_heading, text="CALIBRATE MOTION BOUNDARY", font=FONT_HEADING, bg=BG, fg=INK).pack(side="left")
         help_badge = tk.Canvas(calib_heading, width=16, height=16, bg=BG, highlightthickness=0, cursor="hand2")
@@ -235,9 +344,47 @@ class SettingsWindow:
         _add_tooltip(help_badge, _CALIBRATE_HELP)
 
         RoundedButton(
-            self.win, btn_width, 34, color=PURPLE, on_click=self._calibrate_clicked,
+            self._content, btn_width, 34, color=PURPLE, on_click=self._calibrate_clicked,
             text="⌖  CALIBRATE", font=FONT_BUTTON, fg="white", bg=BG,
         ).pack(padx=16, pady=(0, 16))
+
+        self._custom_state = custom_bindings_module.load_state()
+        self._pending_gestures = set()
+
+        tk.Label(self._content, text="CUSTOM GESTURES", font=FONT_HEADING, bg=BG, fg=INK).pack(
+            anchor="w", padx=16, pady=(14, 6)
+        )
+        preset_row = tk.Frame(self._content, bg=BG)
+        preset_row.pack(fill="x", padx=16, pady=4)
+        tk.Label(preset_row, text="Preset", font=FONT_LABEL, bg=BG, fg=INK,
+                 width=_ROW_LABEL_WIDTH, anchor="w").pack(side="left")
+        self._preset_btn = tk.Label(
+            preset_row, text=self._custom_state["active"] + _DROPDOWN_ARROW, font=FONT_VALUE,
+            bg="white", fg=INK, anchor="w", padx=8, pady=4, cursor="hand2",
+        )
+        _bordered(self._preset_btn)
+        self._preset_btn.pack(side="left", fill="x", expand=True)
+        self._preset_btn.bind("<Button-1>", lambda _e: self._open_preset_popup())
+
+        preset_actions = tk.Frame(self._content, bg=BG)
+        preset_actions.pack(fill="x", padx=16, pady=(0, 10))
+        RoundedButton(
+            preset_actions, 110, 28, color="#DDDDDD", on_click=self._save_as_preset,
+            text="SAVE AS NEW", font=("Segoe UI", 9, "bold"), bg=BG,
+        ).pack(side="left", padx=(0, 6))
+        RoundedButton(
+            preset_actions, 90, 28, color="#DDDDDD", on_click=self._delete_preset,
+            text="DELETE", font=("Segoe UI", 9, "bold"), bg=BG,
+        ).pack(side="left")
+
+        self._binding_rows_frame = tk.Frame(self._content, bg=BG)
+        self._binding_rows_frame.pack(fill="x")
+        self._rebuild_binding_rows()
+
+        RoundedButton(
+            self._content, btn_width, 30, color="#DDDDDD", on_click=self._add_binding_row,
+            text="+ ADD BINDING", font=FONT_BUTTON, bg=BG,
+        ).pack(padx=16, pady=(4, 18))
 
     # ------------------------------------------------------------------
     def _dropdown_row(self, label_text, options, initial_value, on_select):
@@ -246,7 +393,7 @@ class SettingsWindow:
         colors are set on it — the only way to actually theme the popup
         list is to not use a real menu at all, and draw our own borderless
         Toplevel full of styled rows instead."""
-        row = tk.Frame(self.win, bg=BG)
+        row = tk.Frame(self._content, bg=BG)
         row.pack(fill="x", padx=16, pady=4)
         tk.Label(row, text=label_text, font=FONT_LABEL, bg=BG, fg=INK,
                  width=_ROW_LABEL_WIDTH, anchor="w").pack(side="left")
@@ -260,43 +407,44 @@ class SettingsWindow:
 
         def choose(option):
             btn.configure(text=option + _DROPDOWN_ARROW)
-            self._close_popup()
             on_select(option)
 
-        def open_popup(_event=None):
-            if self._active_popup is not None:
-                self._close_popup()
-                return
-
-            btn.update_idletasks()
-            x = btn.winfo_rootx()
-            y = btn.winfo_rooty() + btn.winfo_height()
-            width = max(btn.winfo_width(), 140)
-
-            popup = tk.Toplevel(self.win)
-            popup.overrideredirect(True)
-            popup.attributes("-topmost", True)
-            popup.configure(bg=INK)  # the 2px ring around `inner` reads as its border
-
-            inner = tk.Frame(popup, bg="white")
-            inner.pack(padx=2, pady=2)
-            for option in options:
-                option_row = tk.Label(
-                    inner, text=option, font=FONT_VALUE, bg="white", fg=INK,
-                    anchor="w", padx=8, pady=6, cursor="hand2", width=max(width // 7, 16),
-                )
-                option_row.pack(fill="x")
-                option_row.bind("<Enter>", lambda _e, w=option_row: w.configure(bg=YELLOW))
-                option_row.bind("<Leave>", lambda _e, w=option_row: w.configure(bg="white"))
-                option_row.bind("<Button-1>", lambda _e, o=option: choose(o))
-
-            popup.geometry(f"+{x}+{y}")
-            popup.bind("<FocusOut>", lambda _e: self._close_popup())
-            popup.focus_force()
-            self._active_popup = popup
-
-        btn.bind("<Button-1>", open_popup)
+        btn.bind("<Button-1>", lambda _e: self._popup_choice_list(btn, options, choose))
         return btn
+
+    def _popup_choice_list(self, anchor_widget, options, on_choose):
+        """Borderless-popup list anchored under `anchor_widget` — shared
+        by the finger/camera dropdowns, the preset picker, and the
+        per-row gesture picker."""
+        if self._active_popup is not None:
+            self._close_popup()
+
+        anchor_widget.update_idletasks()
+        x = anchor_widget.winfo_rootx()
+        y = anchor_widget.winfo_rooty() + anchor_widget.winfo_height()
+        width = max(anchor_widget.winfo_width(), 140)
+
+        popup = tk.Toplevel(self.win)
+        popup.overrideredirect(True)
+        popup.attributes("-topmost", True)
+        popup.configure(bg=INK)
+
+        inner = tk.Frame(popup, bg="white")
+        inner.pack(padx=2, pady=2)
+        for option in options:
+            option_row = tk.Label(
+                inner, text=option, font=FONT_VALUE, bg="white", fg=INK,
+                anchor="w", padx=8, pady=6, cursor="hand2", width=max(width // 7, 16),
+            )
+            option_row.pack(fill="x")
+            option_row.bind("<Enter>", lambda _e, w=option_row: w.configure(bg=YELLOW))
+            option_row.bind("<Leave>", lambda _e, w=option_row: w.configure(bg="white"))
+            option_row.bind("<Button-1>", lambda _e, o=option: (self._close_popup(), on_choose(o)))
+
+        popup.geometry(f"+{x}+{y}")
+        popup.bind("<FocusOut>", lambda _e: self._close_popup())
+        popup.focus_force()
+        self._active_popup = popup
 
     def _close_popup(self):
         if self._active_popup is not None:
@@ -304,7 +452,7 @@ class SettingsWindow:
             self._active_popup = None
 
     def _fixed_row(self, label_text, value_text):
-        row = tk.Frame(self.win, bg=BG)
+        row = tk.Frame(self._content, bg=BG)
         row.pack(fill="x", padx=16, pady=4)
         tk.Label(row, text=label_text, font=FONT_LABEL, bg=BG, fg=INK,
                  width=_ROW_LABEL_WIDTH, anchor="w").pack(side="left")
@@ -314,7 +462,7 @@ class SettingsWindow:
         )).pack(side="left", fill="x", expand=True)
 
     def _slider_row(self, key, label_text, lo, hi, res, fmt):
-        row = tk.Frame(self.win, bg=BG)
+        row = tk.Frame(self._content, bg=BG)
         row.pack(fill="x", padx=16, pady=6)
         tk.Label(row, text=label_text, font=FONT_LABEL, bg=BG, fg=INK,
                  width=_ROW_LABEL_WIDTH, anchor="w").pack(side="left")
@@ -375,6 +523,177 @@ class SettingsWindow:
     def _calibrate_clicked(self):
         self.close()
         self._on_calibrate()
+
+    # ------------------------------------------------------------------
+    def _active_bindings(self):
+        return self._custom_state["presets"][self._custom_state["active"]]
+
+    def _displayed_bindings(self):
+        """Active bindings plus any pending (not-yet-keyed) rows, for
+        rendering only — pending rows never enter self._custom_state until
+        a real key is captured, so an unfilled row can never make the saved
+        state invalid."""
+        combined = dict(self._active_bindings())
+        for gesture in self._pending_gestures:
+            combined.setdefault(gesture, [])
+        return combined
+
+    def _rebuild_binding_rows(self):
+        if self._active_key_capture is not None:
+            self._active_key_capture.cancel()
+            self._active_key_capture = None
+        for child in self._binding_rows_frame.winfo_children():
+            child.destroy()
+        for gesture, keys in self._displayed_bindings().items():
+            self._binding_row(gesture, keys)
+
+    def _binding_row(self, gesture, keys):
+        row = tk.Frame(self._binding_rows_frame, bg=BG)
+        row.pack(fill="x", padx=16, pady=4)
+
+        gesture_btn = tk.Label(
+            row, text=custom_bindings_module.GESTURE_LABELS[gesture] + _DROPDOWN_ARROW,
+            font=FONT_VALUE, bg="white", fg=INK, anchor="w", padx=8, pady=4,
+            cursor="hand2", width=16,
+        )
+        _bordered(gesture_btn)
+        gesture_btn.pack(side="left", padx=(0, 6))
+        gesture_btn.bind("<Button-1>", lambda _e, g=gesture, b=gesture_btn: self._open_gesture_popup(g, b))
+
+        capture = _KeyCapture(
+            row, self.win, keys, lambda new_keys, g=gesture: self._on_key_change(g, new_keys),
+            on_start=self._on_key_capture_start,
+        )
+        capture.pack(side="left", fill="x", expand=True, padx=(0, 6))
+
+        remove_btn = tk.Label(
+            row, text="×", font=("Segoe UI", 12, "bold"), bg=BG, fg=INK, cursor="hand2", padx=6,
+        )
+        remove_btn.pack(side="left")
+        remove_btn.bind("<Button-1>", lambda _e, g=gesture: self._remove_binding(g))
+
+    def _unused_gestures(self):
+        used = set(self._displayed_bindings().keys())
+        return [g for g in custom_bindings_module.GESTURES if g not in used]
+
+    def _add_binding_row(self):
+        available = self._unused_gestures()
+        if not available:
+            return
+        self._pending_gestures.add(available[0])
+        self._rebuild_binding_rows()
+
+    def _remove_binding(self, gesture):
+        self._pending_gestures.discard(gesture)
+        if gesture in self._active_bindings():
+            self._active_bindings().pop(gesture, None)
+            self._apply_custom_bindings()
+        self._rebuild_binding_rows()
+
+    def _on_key_capture_start(self, capture):
+        if self._active_key_capture is not None and self._active_key_capture is not capture:
+            self._active_key_capture.cancel()
+        self._active_key_capture = capture
+
+    def _open_gesture_popup(self, gesture, anchor_widget):
+        choices = [custom_bindings_module.GESTURE_LABELS[g] for g in self._unused_gestures()]
+        current_label = custom_bindings_module.GESTURE_LABELS[gesture]
+        if current_label not in choices:
+            choices = [current_label] + choices
+
+        def choose(label):
+            new_gesture = next(
+                g for g, l in custom_bindings_module.GESTURE_LABELS.items() if l == label
+            )
+            if new_gesture == gesture:
+                return
+            if gesture in self._pending_gestures:
+                self._pending_gestures.discard(gesture)
+                self._pending_gestures.add(new_gesture)
+            else:
+                bindings_dict = self._active_bindings()
+                bindings_dict[new_gesture] = bindings_dict.pop(gesture)
+                self._apply_custom_bindings()
+            self._rebuild_binding_rows()
+
+        self._popup_choice_list(anchor_widget, choices, choose)
+
+    def _on_key_change(self, gesture, keys):
+        self._pending_gestures.discard(gesture)
+        self._active_bindings()[gesture] = keys
+        self._apply_custom_bindings()
+
+    def _apply_custom_bindings(self):
+        active = custom_bindings_module.active_bindings(self._custom_state)
+        self.recognizer.set_custom_bindings(active)
+        custom_bindings_module.save_state(self._custom_state)
+
+    def _open_preset_popup(self):
+        names = list(self._custom_state["presets"].keys())
+
+        def choose(name):
+            self._custom_state["active"] = name
+            self._preset_btn.configure(text=name + _DROPDOWN_ARROW)
+            self._apply_custom_bindings()
+            self._rebuild_binding_rows()
+
+        self._popup_choice_list(self._preset_btn, names, choose)
+
+    def _save_as_preset(self):
+        self._prompt_name("New preset name:", self._create_preset)
+
+    def _create_preset(self, name):
+        name = name.strip()
+        if not name or name in self._custom_state["presets"]:
+            return
+        self._custom_state["presets"][name] = dict(self._active_bindings())
+        self._custom_state["active"] = name
+        self._preset_btn.configure(text=name + _DROPDOWN_ARROW)
+        self._apply_custom_bindings()
+        self._rebuild_binding_rows()
+
+    def _delete_preset(self):
+        name = self._custom_state["active"]
+        if name == custom_bindings_module.DEFAULT_PRESET_NAME:
+            return
+        del self._custom_state["presets"][name]
+        self._custom_state["active"] = custom_bindings_module.DEFAULT_PRESET_NAME
+        self._preset_btn.configure(text=self._custom_state["active"] + _DROPDOWN_ARROW)
+        self._apply_custom_bindings()
+        self._rebuild_binding_rows()
+
+    def _prompt_name(self, label_text, on_submit):
+        win = tk.Toplevel(self.win)
+        win.overrideredirect(True)
+        win.attributes("-topmost", True)
+        win.configure(bg=INK)
+        inner = tk.Frame(win, bg=BG)
+        inner.pack(padx=2, pady=2)
+        tk.Label(inner, text=label_text, font=FONT_LABEL, bg=BG, fg=INK).pack(
+            anchor="w", padx=10, pady=(10, 4)
+        )
+        entry = tk.Entry(inner, font=FONT_VALUE, bg="white", fg=INK, highlightbackground=INK,
+                          highlightthickness=1, width=24)
+        entry.pack(padx=10, pady=(0, 10))
+
+        def submit(_event=None):
+            value = entry.get()
+            win.destroy()
+            on_submit(value)
+
+        def cancel(_event=None):
+            win.destroy()
+
+        entry.bind("<Return>", submit)
+        entry.bind("<Escape>", cancel)
+        RoundedButton(inner, 80, 26, color="#DDDDDD", on_click=submit, text="OK",
+                      font=("Segoe UI", 9, "bold"), bg=BG).pack(pady=(0, 10))
+        x = self.win.winfo_rootx() + 60
+        y = self.win.winfo_rooty() + 60
+        win.geometry(f"+{x}+{y}")
+        win.bind("<FocusOut>", cancel)
+        win.focus_force()
+        entry.focus_set()
 
     def close(self):
         self._close_popup()

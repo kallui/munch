@@ -400,6 +400,9 @@ class MunchApp:
                     self._calibration_overlay.update_tracking(norm_pos)
                 elif self.munch_on:
                     self.mouse.handle_events(events)
+                    for event in events:
+                        if event[0] == "key_combo":
+                            self.keyboard.press_combo(event[1])
 
                 self._update_cursor_hud()
                 self._render_frame(annotated)
