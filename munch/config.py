@@ -85,3 +85,18 @@ WAKE_MIN_SPREAD_RATIO = 0.1
 SCROLL_DEADZONE = 0.025  # normalized distance from baseline with no scroll
 SCROLL_SPEED_SCALE = 4.0  # scroll ticks/frame per unit of normalized offset
 SCROLL_MAX_SPEED = 1.5  # cap on scroll ticks/frame
+
+# Custom gesture library: index-middle fingertip gap (relative to hand
+# scale, like the wake-pose spread check) at/above which the shared
+# index+middle-extended shape counts as a "spread" peace sign instead of
+# scroll's "together" pointing shape. Starting value — expect to tune by
+# feel once this is running, the same way PINCH_ON_THRESHOLD/
+# SCROLL_DEADZONE originally were.
+TWO_FINGER_SPREAD_RATIO = 0.18
+
+# Slap left/right: horizontal palm-center velocity (normalized units per
+# second) over a short trailing window that counts as a deliberate slap
+# rather than ordinary cursor movement. Also a feel-tuned starting value.
+SLAP_WINDOW_SECONDS = 0.25
+SLAP_VELOCITY_THRESHOLD = 2.5
+SLAP_COOLDOWN_SECONDS = 0.6  # minimum gap between two slap firings
