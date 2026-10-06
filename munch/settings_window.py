@@ -111,21 +111,26 @@ class _SliderWidget:
 class _KeyCapture:
     """A "click to set key" field — captures the next real key/modifier
     combo pressed anywhere in the Settings window, via KeyPress (and
-    tracking modifier KeyPress/Release separately, rather than relying
-    on event.state's platform-specific bitmask) so it works for both a
-    lone key and a held-modifier combo."""
+    tracking modifier state across KeyPress events, not event.state's
+    platform-specific bitmask) so it works for both a lone key and a
+    held-modifier combo. Only one capture can listen at a time; starting
+    a new one cancels whichever was previously listening."""
 
     _MODIFIER_KEYSYMS = {
         "Control_L": "ctrl", "Control_R": "ctrl",
         "Alt_L": "alt", "Alt_R": "alt",
         "Shift_L": "shift", "Shift_R": "shift",
     }
+    _CAPTURABLE_SPECIAL = {"Return": "enter", "BackSpace": "backspace", "Tab": "tab", "space": "space"}
 
-    def __init__(self, parent, window, initial_keys, on_change):
+    def __init__(self, parent, window, initial_keys, on_change, on_start=None):
         self._window = window
         self._on_change = on_change
+        self._on_start = on_start
         self._listening = False
         self._held_modifiers = []
+        self._bind_id = None
+        self._keys = initial_keys
 
         self.label = tk.Label(
             parent, text=self._format(initial_keys), font=FONT_VALUE, bg="white", fg=INK,
@@ -140,10 +145,27 @@ class _KeyCapture:
     def _start_listening(self, _event=None):
         if self._listening:
             return
+        if self._on_start:
+            self._on_start(self)
         self._listening = True
         self._held_modifiers = []
         self.label.configure(text="Press keys...", bg=YELLOW)
-        self._window.bind("<KeyPress>", self._on_key_press)
+        self._bind_id = self._window.bind("<KeyPress>", self._on_key_press)
+
+    def cancel(self):
+        """Stop listening without completing a capture — called when a
+        different capture field starts, or this row is about to be
+        destroyed by a rebuild."""
+        if not self._listening:
+            return
+        self._listening = False
+        if self._bind_id is not None:
+            self._window.unbind("<KeyPress>", self._bind_id)
+            self._bind_id = None
+        try:
+            self.label.configure(text=self._format(self._keys), bg="white")
+        except tk.TclError:
+            pass  # widget already destroyed
 
     def _on_key_press(self, event):
         keysym = event.keysym
@@ -152,11 +174,16 @@ class _KeyCapture:
             if name not in self._held_modifiers:
                 self._held_modifiers.append(name)
             return
-        key = keysym.lower()
+        if keysym in self._CAPTURABLE_SPECIAL:
+            key = self._CAPTURABLE_SPECIAL[keysym]
+        elif len(keysym) == 1:
+            key = keysym.lower()
+        else:
+            return  # unsupported key (Escape/F-keys/arrows/etc.) — keep listening
         combo = self._held_modifiers + [key]
-        self._listening = False
-        self._window.unbind("<KeyPress>")
-        self.label.configure(text=self._format(combo), bg="white")
+        self.cancel()
+        self._keys = combo
+        self.label.configure(text=self._format(combo))
         self._on_change(combo)
 
     def pack(self, **kwargs):
@@ -228,6 +255,7 @@ class SettingsWindow:
         self._on_calibrate = on_calibrate
         self._on_camera_change = on_camera_change
         self._active_popup = None
+        self._active_key_capture = None
         self._binding_state = dict(recognizer.bindings)  # action -> finger, live working copy
         self._action_btns = {}
 
@@ -296,6 +324,7 @@ class SettingsWindow:
         ).pack(padx=16, pady=(0, 16))
 
         self._custom_state = custom_bindings_module.load_state()
+        self._pending_gestures = set()
 
         tk.Label(self.win, text="CUSTOM GESTURES", font=FONT_HEADING, bg=BG, fg=INK).pack(
             anchor="w", padx=16, pady=(14, 6)
@@ -474,10 +503,23 @@ class SettingsWindow:
     def _active_bindings(self):
         return self._custom_state["presets"][self._custom_state["active"]]
 
+    def _displayed_bindings(self):
+        """Active bindings plus any pending (not-yet-keyed) rows, for
+        rendering only — pending rows never enter self._custom_state until
+        a real key is captured, so an unfilled row can never make the saved
+        state invalid."""
+        combined = dict(self._active_bindings())
+        for gesture in self._pending_gestures:
+            combined.setdefault(gesture, [])
+        return combined
+
     def _rebuild_binding_rows(self):
+        if self._active_key_capture is not None:
+            self._active_key_capture.cancel()
+            self._active_key_capture = None
         for child in self._binding_rows_frame.winfo_children():
             child.destroy()
-        for gesture, keys in self._active_bindings().items():
+        for gesture, keys in self._displayed_bindings().items():
             self._binding_row(gesture, keys)
 
     def _binding_row(self, gesture, keys):
@@ -493,7 +535,10 @@ class SettingsWindow:
         gesture_btn.pack(side="left", padx=(0, 6))
         gesture_btn.bind("<Button-1>", lambda _e, g=gesture, b=gesture_btn: self._open_gesture_popup(g, b))
 
-        capture = _KeyCapture(row, self.win, keys, lambda new_keys, g=gesture: self._on_key_change(g, new_keys))
+        capture = _KeyCapture(
+            row, self.win, keys, lambda new_keys, g=gesture: self._on_key_change(g, new_keys),
+            on_start=self._on_key_capture_start,
+        )
         capture.pack(side="left", fill="x", expand=True, padx=(0, 6))
 
         remove_btn = tk.Label(
@@ -503,20 +548,27 @@ class SettingsWindow:
         remove_btn.bind("<Button-1>", lambda _e, g=gesture: self._remove_binding(g))
 
     def _unused_gestures(self):
-        used = set(self._active_bindings().keys())
+        used = set(self._displayed_bindings().keys())
         return [g for g in custom_bindings_module.GESTURES if g not in used]
 
     def _add_binding_row(self):
         available = self._unused_gestures()
         if not available:
             return
-        self._active_bindings()[available[0]] = []
+        self._pending_gestures.add(available[0])
         self._rebuild_binding_rows()
 
     def _remove_binding(self, gesture):
-        self._active_bindings().pop(gesture, None)
-        self._apply_custom_bindings()
+        self._pending_gestures.discard(gesture)
+        if gesture in self._active_bindings():
+            self._active_bindings().pop(gesture, None)
+            self._apply_custom_bindings()
         self._rebuild_binding_rows()
+
+    def _on_key_capture_start(self, capture):
+        if self._active_key_capture is not None and self._active_key_capture is not capture:
+            self._active_key_capture.cancel()
+        self._active_key_capture = capture
 
     def _open_gesture_popup(self, gesture, anchor_widget):
         choices = [custom_bindings_module.GESTURE_LABELS[g] for g in self._unused_gestures()]
@@ -530,14 +582,19 @@ class SettingsWindow:
             )
             if new_gesture == gesture:
                 return
-            bindings_dict = self._active_bindings()
-            bindings_dict[new_gesture] = bindings_dict.pop(gesture, [])
-            self._apply_custom_bindings()
+            if gesture in self._pending_gestures:
+                self._pending_gestures.discard(gesture)
+                self._pending_gestures.add(new_gesture)
+            else:
+                bindings_dict = self._active_bindings()
+                bindings_dict[new_gesture] = bindings_dict.pop(gesture)
+                self._apply_custom_bindings()
             self._rebuild_binding_rows()
 
         self._popup_choice_list(anchor_widget, choices, choose)
 
     def _on_key_change(self, gesture, keys):
+        self._pending_gestures.discard(gesture)
         self._active_bindings()[gesture] = keys
         self._apply_custom_bindings()
 
@@ -593,19 +650,25 @@ class SettingsWindow:
         entry = tk.Entry(inner, font=FONT_VALUE, bg="white", fg=INK, highlightbackground=INK,
                           highlightthickness=1, width=24)
         entry.pack(padx=10, pady=(0, 10))
-        entry.focus_set()
 
         def submit(_event=None):
             value = entry.get()
             win.destroy()
             on_submit(value)
 
+        def cancel(_event=None):
+            win.destroy()
+
         entry.bind("<Return>", submit)
+        entry.bind("<Escape>", cancel)
         RoundedButton(inner, 80, 26, color="#DDDDDD", on_click=submit, text="OK",
                       font=("Segoe UI", 9, "bold"), bg=BG).pack(pady=(0, 10))
         x = self.win.winfo_rootx() + 60
         y = self.win.winfo_rooty() + 60
         win.geometry(f"+{x}+{y}")
+        win.bind("<FocusOut>", cancel)
+        win.focus_force()
+        entry.focus_set()
 
     def close(self):
         self._close_popup()
