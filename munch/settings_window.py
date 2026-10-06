@@ -14,6 +14,7 @@ import tkinter as tk
 from munch import bindings as bindings_module
 from munch import tuning as tuning_module
 from munch.theme import BG, BORDER_W, INK, PURPLE, YELLOW
+from munch.widgets import RoundedButton
 
 FONT_HEADING = ("Segoe UI", 12, "bold")
 FONT_LABEL = ("Segoe UI", 10, "bold")
@@ -191,11 +192,12 @@ class SettingsWindow:
         self._fixed_row("Scroll", "Index + middle extended")
         self._fixed_row("Wake / arm", "Open palm, spread")
 
-        _bordered(tk.Button(
-            self.win, text="RESET TO DEFAULT PRESET", font=FONT_BUTTON,
-            bg="#DDDDDD", fg=INK, activebackground="#DDDDDD", relief="flat", bd=0,
-            cursor="hand2", command=self._reset_default,
-        )).pack(fill="x", padx=16, pady=(10, 18))
+        self.win.update_idletasks()
+        btn_width = self.win.winfo_reqwidth() - 32
+        RoundedButton(
+            self.win, btn_width, 34, color="#DDDDDD", on_click=self._reset_default,
+            text="RESET TO DEFAULT PRESET", font=FONT_BUTTON, bg=BG,
+        ).pack(padx=16, pady=(10, 18))
 
         tk.Label(self.win, text="SENSITIVITY", font=FONT_HEADING, bg=BG, fg=INK).pack(
             anchor="w", padx=16, pady=(0, 6)
@@ -232,11 +234,10 @@ class SettingsWindow:
         help_badge.pack(side="left", padx=(6, 0))
         _add_tooltip(help_badge, _CALIBRATE_HELP)
 
-        _bordered(tk.Button(
-            self.win, text="⌖  CALIBRATE", font=FONT_BUTTON,
-            bg=PURPLE, fg="white", activebackground=PURPLE, activeforeground="white",
-            relief="flat", bd=0, cursor="hand2", command=self._calibrate_clicked,
-        )).pack(fill="x", padx=16, pady=(0, 16))
+        RoundedButton(
+            self.win, btn_width, 34, color=PURPLE, on_click=self._calibrate_clicked,
+            text="⌖  CALIBRATE", font=FONT_BUTTON, fg="white", bg=BG,
+        ).pack(padx=16, pady=(0, 16))
 
     # ------------------------------------------------------------------
     def _dropdown_row(self, label_text, options, initial_value, on_select):

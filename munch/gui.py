@@ -26,6 +26,7 @@ from munch.theme import (
     BG, BLUE, BORDER_W, FONT_BUTTON, FONT_STATUS, FONT_SUB, FONT_TITLE,
     GREEN, INK, PINK, SHADOW_OFFSET, YELLOW,
 )
+from munch.widgets import RoundedButton, hover_tint
 
 _ICON_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "icon.png")
 
@@ -118,18 +119,15 @@ class MunchApp:
         except Exception:
             pass  # missing/unreadable icon asset shouldn't stop the app from starting
 
-    def _build_icon_button(self, parent, icon_name, on_click):
-        """A small square icon button using a real Tabler Icons glyph
-        (see munch/icons.py) instead of a hand-drawn Canvas shape or a
-        font character — crisper and more distinctive at this size."""
-        size = 32
-        canvas = tk.Canvas(parent, width=size, height=size, bg=INK, highlightthickness=0, cursor="hand2")
-        icon_image = icons.load_icon(icon_name, YELLOW, 20)
-        photo = ImageTk.PhotoImage(icon_image)
-        canvas.create_image(size // 2, size // 2, image=photo)
-        canvas.image = photo  # keep a reference alive (avoid GC)
-        canvas.bind("<Button-1>", lambda _event: on_click())
-        return canvas
+    def _build_icon_button(self, parent, icon_name, on_click, panel_bg=YELLOW):
+        """A small rounded icon button using a real Tabler Icons glyph
+        (see munch/icons.py) and the shared sticker-button interaction
+        (see munch/widgets.py) instead of a hand-drawn flat square."""
+        size = 28
+        return RoundedButton(
+            parent, size, size, color="white", on_click=on_click,
+            icon_image=icons.load_icon(icon_name, INK, 18), bg=panel_bg,
+        )
 
     def _open_cheat_sheet(self):
         if self._cheat_sheet is not None:
@@ -210,26 +208,30 @@ class MunchApp:
 
         # Toggle button: ENABLE/DISABLE is the overall on/off; once
         # enabled, the status tier above shows STANDBY until the wake
-        # gesture moves it to ACTIVE.
-        self._toggle_panel = tk.Frame(control_front, bg=PINK, width=PANEL_W, height=button_h)
-        self._toggle_panel.place(x=0, y=status_h + divider_h)
-        self.toggle_button = tk.Button(
-            self._toggle_panel, text="▶  ENABLE MUNCH", font=FONT_BUTTON,
-            bg=PINK, fg=INK, activebackground=PINK, activeforeground=INK,
-            relief="flat", bd=0, cursor="hand2", command=self._toggle,
+        # gesture moves it to ACTIVE. A flat, full-bleed color strip —
+        # no corner rounding, no shadow of its own — so it reads as part
+        # of one card whose only shadow is the card's own outer one,
+        # instead of a button nested inside a button.
+        self._toggle_color = PINK
+        self.toggle_button = tk.Label(
+            control_front, text="▶  ENABLE MUNCH", font=FONT_BUTTON,
+            bg=PINK, fg=INK, cursor="hand2",
         )
-        self.toggle_button.place(x=0, y=0, width=PANEL_W, height=button_h)
+        self.toggle_button.place(x=0, y=status_h + divider_h, width=PANEL_W, height=button_h)
+        self.toggle_button.bind("<Button-1>", lambda _e: self._toggle())
+        self.toggle_button.bind("<Enter>", lambda _e: self.toggle_button.config(bg=hover_tint(self._toggle_color)))
+        self.toggle_button.bind("<Leave>", lambda _e: self.toggle_button.config(bg=self._toggle_color))
 
     def _toggle(self):
         self.munch_on = not self.munch_on
         if self.munch_on:
             self.mouse.reset_smoothing()
             self.recognizer.reset_wake()  # always start a fresh session in standby
-            self.toggle_button.configure(text="■  DISABLE MUNCH", bg=GREEN)
-            self._toggle_panel.configure(bg=GREEN)
+            self._toggle_color = GREEN
+            self.toggle_button.config(bg=GREEN, text="■  DISABLE MUNCH")
         else:
-            self.toggle_button.configure(text="▶  ENABLE MUNCH", bg=PINK)
-            self._toggle_panel.configure(bg=PINK)
+            self._toggle_color = PINK
+            self.toggle_button.config(bg=PINK, text="▶  ENABLE MUNCH")
 
     def _on_overlay_setting_changed(self):
         self._settings["show_overlay"] = self.show_overlay_var.get()
