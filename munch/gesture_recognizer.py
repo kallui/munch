@@ -11,36 +11,18 @@ import math
 import time
 
 from munch import bindings, config, tuning
-
-WRIST = 0
-THUMB_IP, THUMB_TIP = 3, 4
-INDEX_MCP, INDEX_PIP, INDEX_TIP = 5, 6, 8
-MIDDLE_MCP, MIDDLE_PIP, MIDDLE_TIP = 9, 10, 12
-RING_MCP, RING_PIP, RING_TIP = 13, 14, 16
-PINKY_MCP, PINKY_PIP, PINKY_TIP = 17, 18, 20
-
-_PALM_LANDMARKS = (WRIST, INDEX_MCP, MIDDLE_MCP, RING_MCP, PINKY_MCP)
-
-
-def _dist(a, b):
-    return math.hypot(a[0] - b[0], a[1] - b[1])
+from munch import hand_landmarks as _hl
+from munch.hand_landmarks import (
+    INDEX_MCP, INDEX_PIP, INDEX_TIP, MIDDLE_MCP, MIDDLE_PIP, MIDDLE_TIP,
+    PINKY_MCP, PINKY_PIP, PINKY_TIP, RING_MCP, RING_PIP, RING_TIP,
+    THUMB_TIP, WRIST, palm_center,
+)
+from munch.hand_landmarks import dist as _dist
+from munch.hand_landmarks import finger_extended as _finger_extended
 
 
-def palm_center(landmarks):
-    """Centroid of the wrist + four knuckle (MCP) joints — stays stable
-    while fingers articulate for a pinch, unlike a fingertip. Used to
-    drive cursor position so clicking doesn't flick the cursor off-target
-    (pinch/click detection stays fingertip-based, fully decoupled)."""
-    xs = sum(landmarks[i][0] for i in _PALM_LANDMARKS) / len(_PALM_LANDMARKS)
-    ys = sum(landmarks[i][1] for i in _PALM_LANDMARKS) / len(_PALM_LANDMARKS)
-    return xs, ys
-
-
-def _finger_extended(landmarks, tip_idx, pip_idx, ratio=1.15):
-    wrist = landmarks[WRIST]
-    tip = landmarks[tip_idx]
-    pip = landmarks[pip_idx]
-    return _dist(wrist, tip) > _dist(wrist, pip) * ratio
+def _fingers_spread(landmarks):
+    return _hl.fingers_spread(landmarks, config.WAKE_MIN_SPREAD_RATIO)
 
 
 _PINCH_SOURCES = {
@@ -71,21 +53,6 @@ def _pinch_gesture_name(action):
 
 def _drag_gesture_name(action):
     return "drag" if action == "left" else f"{action}_drag"  # "drag" kept for the original left-drag name
-
-
-def _fingers_spread(landmarks):
-    """True if adjacent fingertips (index-middle-ring-pinky) are clearly
-    apart, not just extended-but-together — distinguishes a deliberate
-    "spread open palm" from a flat hand with fingers held side-by-side
-    (e.g. pressed against a cheek during skincare)."""
-    hand_scale = _dist(landmarks[WRIST], landmarks[MIDDLE_TIP])
-    if hand_scale == 0:
-        return False
-    tips = (INDEX_TIP, MIDDLE_TIP, RING_TIP, PINKY_TIP)
-    for a, b in zip(tips, tips[1:]):
-        if _dist(landmarks[a], landmarks[b]) < config.WAKE_MIN_SPREAD_RATIO * hand_scale:
-            return False
-    return True
 
 
 class GestureRecognizer:
