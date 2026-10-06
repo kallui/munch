@@ -2,9 +2,10 @@
 
 Landmarks follow the MediaPipe Hands layout (21 points, normalized x/y/z).
 Priority per frame: wake/arm pose > armed-gate > left/right/middle/double
-pinch (in that order) > scroll pose > plain move — so gestures don't
-fight each other, and nothing below the gate can act while MUNCH is
-"watching" (disarmed).
+pinch (in that order) > slap (velocity-gated) > static custom gestures
+(OK sign / finger counts / peace sign) > scroll pose > plain move — so
+gestures don't fight each other, and nothing below the gate can act
+while MUNCH is "watching" (disarmed).
 """
 
 import time
@@ -101,7 +102,7 @@ class GestureRecognizer:
         [("move", x, y)], [("left_down",)], [("left_up",)], [("left_click",)],
         [("right_down",)], [("right_up",)], [("right_click",)],
         [("middle_down",)], [("middle_up",)], [("middle_click",)],
-        [("double_click",)], [("scroll", ticks)]
+        [("double_click",)], [("scroll", ticks)], [("key_combo", keys)]
 
         bypass_arm=True skips the armed-gate for this call (used during
         calibration, which is already a deliberate, hands-on flow).
@@ -154,6 +155,7 @@ class GestureRecognizer:
                 if self.wake_progress >= 1.0:
                     self.armed = True
                     self.wake_progress = 0.0
+                    self._custom_active["count_4"] = True
                     self.current_gesture = "armed"
                     return []
                 self.current_gesture = "wake_hold"
@@ -222,7 +224,7 @@ class GestureRecognizer:
         # shape — the only real distinguishing signal is velocity, so a
         # fast-moving hand should always read as a slap attempt, never
         # as someone unrealistically holding a mid-swipe pose still.
-        if now >= self._slap_cooldown_until:
+        if now >= self._slap_cooldown_until and custom_gestures.extended_finger_count(landmarks) >= 3:
             direction = custom_gestures.classify_slap(self._palm_history, now)
             if direction is not None:
                 gesture_id = f"slap_{direction}"
@@ -231,7 +233,9 @@ class GestureRecognizer:
                 self._palm_history.clear()
                 for gid in self._custom_active:
                     self._custom_active[gid] = False
-                return self._fire_custom_gesture(gesture_id)
+                if self.custom_bindings.get(gesture_id):
+                    return self._fire_custom_gesture(gesture_id)
+                return [("move", pointer[0], pointer[1])]
 
         # --- Custom gesture library (OK sign / finger counts / peace
         # sign), one-shot: must release and re-form to fire again. Only

@@ -264,7 +264,32 @@ class SettingsWindow:
         self.win.configure(bg=BG)
         self.win.resizable(False, False)
 
-        tk.Label(self.win, text="GESTURE BINDINGS", font=FONT_HEADING, bg=BG, fg=INK).pack(
+        container = tk.Canvas(self.win, bg=BG, highlightthickness=0)
+        scrollbar = tk.Scrollbar(self.win, orient="vertical", command=container.yview)
+        container.configure(yscrollcommand=scrollbar.set)
+        container.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        self._content = tk.Frame(container, bg=BG)
+        content_window = container.create_window((0, 0), window=self._content, anchor="nw")
+
+        def _on_content_configure(_event=None):
+            container.configure(scrollregion=container.bbox("all"))
+        self._content.bind("<Configure>", _on_content_configure)
+
+        def _on_canvas_configure(event):
+            container.itemconfigure(content_window, width=event.width)
+        container.bind("<Configure>", _on_canvas_configure)
+
+        def _on_mousewheel(event):
+            container.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        container.bind("<MouseWheel>", _on_mousewheel)
+        self._content.bind("<MouseWheel>", _on_mousewheel)
+
+        screen_h = self.win.winfo_screenheight()
+        self.win.geometry(f"420x{min(700, screen_h - 140)}")
+
+        tk.Label(self._content, text="GESTURE BINDINGS", font=FONT_HEADING, bg=BG, fg=INK).pack(
             anchor="w", padx=16, pady=(16, 6)
         )
         for action in _ACTION_ORDER:
@@ -277,20 +302,20 @@ class SettingsWindow:
         self._fixed_row("Wake / arm", "Open palm, spread")
 
         self.win.update_idletasks()
-        btn_width = self.win.winfo_reqwidth() - 32
+        btn_width = 368  # 420 window width, minus padding, minus room for the scrollbar
         RoundedButton(
-            self.win, btn_width, 34, color="#DDDDDD", on_click=self._reset_default,
+            self._content, btn_width, 34, color="#DDDDDD", on_click=self._reset_default,
             text="RESET TO DEFAULT PRESET", font=FONT_BUTTON, bg=BG,
         ).pack(padx=16, pady=(10, 18))
 
-        tk.Label(self.win, text="SENSITIVITY", font=FONT_HEADING, bg=BG, fg=INK).pack(
+        tk.Label(self._content, text="SENSITIVITY", font=FONT_HEADING, bg=BG, fg=INK).pack(
             anchor="w", padx=16, pady=(0, 6)
         )
         self._tuning_state = dict(recognizer.tuning)
         for key, label, lo, hi, res, fmt in _SLIDERS:
             self._slider_row(key, label, lo, hi, res, fmt)
 
-        tk.Label(self.win, text="CAMERA", font=FONT_HEADING, bg=BG, fg=INK).pack(
+        tk.Label(self._content, text="CAMERA", font=FONT_HEADING, bg=BG, fg=INK).pack(
             anchor="w", padx=16, pady=(14, 6)
         )
         self._camera_index_by_name = {name: i for i, name in available_cameras}
@@ -300,16 +325,16 @@ class SettingsWindow:
             "Device", list(self._camera_index_by_name.keys()), current_name, self._on_camera_select
         )
 
-        tk.Label(self.win, text="DISPLAY", font=FONT_HEADING, bg=BG, fg=INK).pack(
+        tk.Label(self._content, text="DISPLAY", font=FONT_HEADING, bg=BG, fg=INK).pack(
             anchor="w", padx=16, pady=(14, 6)
         )
         tk.Checkbutton(
-            self.win, text="Show gesture overlay on cursor", variable=show_overlay_var,
+            self._content, text="Show gesture overlay on cursor", variable=show_overlay_var,
             command=on_overlay_changed, font=FONT_VALUE,
             bg=BG, fg=INK, activebackground=BG, selectcolor=BG, bd=0, highlightthickness=0,
         ).pack(anchor="w", padx=16, pady=(0, 18))
 
-        calib_heading = tk.Frame(self.win, bg=BG)
+        calib_heading = tk.Frame(self._content, bg=BG)
         calib_heading.pack(anchor="w", padx=16, pady=(0, 6))
         tk.Label(calib_heading, text="CALIBRATE MOTION BOUNDARY", font=FONT_HEADING, bg=BG, fg=INK).pack(side="left")
         help_badge = tk.Canvas(calib_heading, width=16, height=16, bg=BG, highlightthickness=0, cursor="hand2")
@@ -319,17 +344,17 @@ class SettingsWindow:
         _add_tooltip(help_badge, _CALIBRATE_HELP)
 
         RoundedButton(
-            self.win, btn_width, 34, color=PURPLE, on_click=self._calibrate_clicked,
+            self._content, btn_width, 34, color=PURPLE, on_click=self._calibrate_clicked,
             text="⌖  CALIBRATE", font=FONT_BUTTON, fg="white", bg=BG,
         ).pack(padx=16, pady=(0, 16))
 
         self._custom_state = custom_bindings_module.load_state()
         self._pending_gestures = set()
 
-        tk.Label(self.win, text="CUSTOM GESTURES", font=FONT_HEADING, bg=BG, fg=INK).pack(
+        tk.Label(self._content, text="CUSTOM GESTURES", font=FONT_HEADING, bg=BG, fg=INK).pack(
             anchor="w", padx=16, pady=(14, 6)
         )
-        preset_row = tk.Frame(self.win, bg=BG)
+        preset_row = tk.Frame(self._content, bg=BG)
         preset_row.pack(fill="x", padx=16, pady=4)
         tk.Label(preset_row, text="Preset", font=FONT_LABEL, bg=BG, fg=INK,
                  width=_ROW_LABEL_WIDTH, anchor="w").pack(side="left")
@@ -341,7 +366,7 @@ class SettingsWindow:
         self._preset_btn.pack(side="left", fill="x", expand=True)
         self._preset_btn.bind("<Button-1>", lambda _e: self._open_preset_popup())
 
-        preset_actions = tk.Frame(self.win, bg=BG)
+        preset_actions = tk.Frame(self._content, bg=BG)
         preset_actions.pack(fill="x", padx=16, pady=(0, 10))
         RoundedButton(
             preset_actions, 110, 28, color="#DDDDDD", on_click=self._save_as_preset,
@@ -352,12 +377,12 @@ class SettingsWindow:
             text="DELETE", font=("Segoe UI", 9, "bold"), bg=BG,
         ).pack(side="left")
 
-        self._binding_rows_frame = tk.Frame(self.win, bg=BG)
+        self._binding_rows_frame = tk.Frame(self._content, bg=BG)
         self._binding_rows_frame.pack(fill="x")
         self._rebuild_binding_rows()
 
         RoundedButton(
-            self.win, btn_width, 30, color="#DDDDDD", on_click=self._add_binding_row,
+            self._content, btn_width, 30, color="#DDDDDD", on_click=self._add_binding_row,
             text="+ ADD BINDING", font=FONT_BUTTON, bg=BG,
         ).pack(padx=16, pady=(4, 18))
 
@@ -368,7 +393,7 @@ class SettingsWindow:
         colors are set on it — the only way to actually theme the popup
         list is to not use a real menu at all, and draw our own borderless
         Toplevel full of styled rows instead."""
-        row = tk.Frame(self.win, bg=BG)
+        row = tk.Frame(self._content, bg=BG)
         row.pack(fill="x", padx=16, pady=4)
         tk.Label(row, text=label_text, font=FONT_LABEL, bg=BG, fg=INK,
                  width=_ROW_LABEL_WIDTH, anchor="w").pack(side="left")
@@ -427,7 +452,7 @@ class SettingsWindow:
             self._active_popup = None
 
     def _fixed_row(self, label_text, value_text):
-        row = tk.Frame(self.win, bg=BG)
+        row = tk.Frame(self._content, bg=BG)
         row.pack(fill="x", padx=16, pady=4)
         tk.Label(row, text=label_text, font=FONT_LABEL, bg=BG, fg=INK,
                  width=_ROW_LABEL_WIDTH, anchor="w").pack(side="left")
@@ -437,7 +462,7 @@ class SettingsWindow:
         )).pack(side="left", fill="x", expand=True)
 
     def _slider_row(self, key, label_text, lo, hi, res, fmt):
-        row = tk.Frame(self.win, bg=BG)
+        row = tk.Frame(self._content, bg=BG)
         row.pack(fill="x", padx=16, pady=6)
         tk.Label(row, text=label_text, font=FONT_LABEL, bg=BG, fg=INK,
                  width=_ROW_LABEL_WIDTH, anchor="w").pack(side="left")
