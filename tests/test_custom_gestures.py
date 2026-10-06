@@ -91,11 +91,11 @@ class TestTwoFingerShape(unittest.TestCase):
 
 class TestClassifySlap(unittest.TestCase):
     def test_fast_rightward_motion_is_a_right_slap(self):
-        history = [(0.0, 0.30), (0.10, 0.45), (0.20, 0.60)]
+        history = [(0.0, 0.20), (0.1, 0.50), (0.2, 0.80)]
         self.assertEqual(classify_slap(history, now=0.20), "right")
 
     def test_fast_leftward_motion_is_a_left_slap(self):
-        history = [(0.0, 0.60), (0.10, 0.45), (0.20, 0.30)]
+        history = [(0.0, 0.80), (0.1, 0.50), (0.2, 0.20)]
         self.assertEqual(classify_slap(history, now=0.20), "left")
 
     def test_slow_motion_is_not_a_slap(self):

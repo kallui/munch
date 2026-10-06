@@ -98,5 +98,5 @@ TWO_FINGER_SPREAD_RATIO = 0.18
 # second) over a short trailing window that counts as a deliberate slap
 # rather than ordinary cursor movement. Also a feel-tuned starting value.
 SLAP_WINDOW_SECONDS = 0.25
-SLAP_VELOCITY_THRESHOLD = 1.0
+SLAP_VELOCITY_THRESHOLD = 2.5
 SLAP_COOLDOWN_SECONDS = 0.6  # minimum gap between two slap firings
