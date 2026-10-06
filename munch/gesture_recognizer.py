@@ -216,6 +216,23 @@ class GestureRecognizer:
                 self.current_gesture = _pinch_gesture_name(action)
                 return []
 
+        # --- Slap left/right: fast horizontal palm motion. Checked
+        # before the static custom-gesture poses below because slap and
+        # the open-hand "count_4" pose share the same instantaneous hand
+        # shape — the only real distinguishing signal is velocity, so a
+        # fast-moving hand should always read as a slap attempt, never
+        # as someone unrealistically holding a mid-swipe pose still.
+        if now >= self._slap_cooldown_until:
+            direction = custom_gestures.classify_slap(self._palm_history, now)
+            if direction is not None:
+                gesture_id = f"slap_{direction}"
+                self.current_gesture = gesture_id
+                self._slap_cooldown_until = now + config.SLAP_COOLDOWN_SECONDS
+                self._palm_history.clear()
+                for gid in self._custom_active:
+                    self._custom_active[gid] = False
+                return self._fire_custom_gesture(gesture_id)
+
         # --- Custom gesture library (OK sign / finger counts / peace
         # sign), one-shot: must release and re-form to fire again. Only
         # claims the frame (blocking normal cursor movement) when the
@@ -255,16 +272,6 @@ class GestureRecognizer:
             return self._scroll(index_tip, middle_tip)
 
         self.scroll_baseline_y = None
-
-        # --- Slap left/right: fast horizontal palm motion ---
-        if now >= self._slap_cooldown_until:
-            direction = custom_gestures.classify_slap(self._palm_history, now)
-            if direction is not None:
-                gesture_id = f"slap_{direction}"
-                self.current_gesture = gesture_id
-                self._slap_cooldown_until = now + config.SLAP_COOLDOWN_SECONDS
-                self._palm_history.clear()
-                return self._fire_custom_gesture(gesture_id)
 
         # --- Plain move ---
         self.current_gesture = "move"
