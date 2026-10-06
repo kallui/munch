@@ -7,7 +7,6 @@ fight each other, and nothing below the gate can act while MUNCH is
 "watching" (disarmed).
 """
 
-import math
 import time
 
 from munch import bindings, config, tuning
