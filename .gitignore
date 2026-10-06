@@ -4,3 +4,7 @@ __pycache__/
 calibration.json
 settings.json
 bindings.json
+tuning.json
+build/
+dist/
+munch_crash.log

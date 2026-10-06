@@ -4,22 +4,35 @@ Flat, loud colors; thick black borders; hard-offset "sticker" shadows;
 bold uppercase type. No gradients, no rounded corners, no glow.
 """
 
+import os
 import time
 import tkinter as tk
 
 import cv2
 from PIL import Image, ImageTk
 
-from munch import calibration, config, settings
+from munch import calibration, config, icons, settings
+from munch.cheat_sheet import CheatSheet
 from munch.gesture_recognizer import GestureRecognizer, palm_center
 from munch.hand_tracker import HandTracker
+from munch.keyboard_controller import KeyboardController
+from munch.keyboard_overlay import KeyboardOverlay
 from munch.mouse_controller import MouseController
 from munch.overlay import CalibrationOverlay, CursorHud
 from munch.settings_window import SettingsWindow, detect_cameras
+from munch.side_dock import SideDock
+from munch.speech_to_text import SpeechToText
 from munch.theme import (
     BG, BLUE, BORDER_W, FONT_BUTTON, FONT_STATUS, FONT_SUB, FONT_TITLE,
     GREEN, INK, PINK, SHADOW_OFFSET, YELLOW,
 )
+
+_ICON_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "icon.png")
+
+# If the camera read fails this many consecutive frames, treat it as
+# disconnected and show that state instead of silently doing nothing.
+_CAMERA_FAILURE_LIMIT = 15
+_CAMERA_RECONNECT_INTERVAL_MS = 2000
 
 # Preview panel + status/toggle strips all share this width for a tidy,
 # compact window instead of the earlier oversized layout.
@@ -63,12 +76,14 @@ class MunchApp:
         self.camera_index = self._settings.get("camera_index", config.CAMERA_INDEX)
         self.capture = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
         self.cursor_hud = CursorHud(root)
+        self._set_window_icon()
 
         self.munch_on = False
         self._last_frame_time = time.monotonic()
         self._fps = 0.0
         self._last_status_word = None
         self._settings_window = None
+        self._cheat_sheet = None
         self._available_cameras = None  # probed once, lazily, on first Settings open; cached after
 
         self.show_overlay_var = tk.BooleanVar(value=self._settings.get("show_overlay", True))
@@ -78,22 +93,52 @@ class MunchApp:
         self._calibration_points = []
         self._calibration_overlay = None
 
+        # Keyboard + dictation
+        self.keyboard = KeyboardController()
+        self.speech = SpeechToText()
+        self._keyboard_overlay = None
+        self.side_dock = SideDock(root, self._toggle_keyboard, self._toggle_mic)
+        self._dock_visible = False
+
+        # Camera robustness: a handful of consecutive bad reads is just
+        # noise, but a long run means the device actually dropped — show
+        # that state and retry periodically instead of freezing silently.
+        self._camera_fail_streak = 0
+        self._camera_lost = False
+        self._last_reconnect_attempt = 0.0
+
         self._build_ui()
         self._loop()
 
-    def _build_settings_icon(self, parent):
-        """A flat, hand-drawn "sliders" icon — three adjustable rows with
-        knobs at different positions, the universal settings glyph — in
-        place of a gear character, which renders inconsistently across
-        fonts and never quite matched the rest of the app's flat,
-        geometric, bordered-shape visual language."""
+    def _set_window_icon(self):
+        try:
+            icon_image = ImageTk.PhotoImage(Image.open(_ICON_PATH))
+            self.root.iconphoto(True, icon_image)
+            self._icon_image = icon_image  # keep a reference alive (avoid GC)
+        except Exception:
+            pass  # missing/unreadable icon asset shouldn't stop the app from starting
+
+    def _build_icon_button(self, parent, icon_name, on_click):
+        """A small square icon button using a real Tabler Icons glyph
+        (see munch/icons.py) instead of a hand-drawn Canvas shape or a
+        font character — crisper and more distinctive at this size."""
         size = 32
         canvas = tk.Canvas(parent, width=size, height=size, bg=INK, highlightthickness=0, cursor="hand2")
-        for y, knob_x in ((10, 12), (16, 21), (22, 16)):
-            canvas.create_line(6, y, size - 6, y, fill=YELLOW, width=2)
-            canvas.create_oval(knob_x - 3, y - 3, knob_x + 3, y + 3, fill=YELLOW, outline=INK, width=1)
-        canvas.bind("<Button-1>", lambda _event: self._open_settings())
+        icon_image = icons.load_icon(icon_name, YELLOW, 20)
+        photo = ImageTk.PhotoImage(icon_image)
+        canvas.create_image(size // 2, size // 2, image=photo)
+        canvas.image = photo  # keep a reference alive (avoid GC)
+        canvas.bind("<Button-1>", lambda _event: on_click())
         return canvas
+
+    def _open_cheat_sheet(self):
+        if self._cheat_sheet is not None:
+            try:
+                self._cheat_sheet.win.lift()
+                return
+            except tk.TclError:
+                self._cheat_sheet = None
+        self._cheat_sheet = CheatSheet(self.root, self.recognizer)
 
     # ------------------------------------------------------------------
     def _build_ui(self):
@@ -116,7 +161,12 @@ class MunchApp:
             font=FONT_SUB, bg=YELLOW, fg=INK,
         ).pack(anchor="w")
 
-        self._build_settings_icon(header).place(relx=1.0, x=-10, rely=0.5, anchor="e")
+        self._build_icon_button(header, "settings", self._open_settings).place(
+            relx=1.0, x=-10, rely=0.5, anchor="e"
+        )
+        self._build_icon_button(header, "info", self._open_cheat_sheet).place(
+            relx=1.0, x=-50, rely=0.5, anchor="e"
+        )
 
         # Webcam preview
         preview_container, preview_panel = _shadow_panel(
@@ -197,7 +247,7 @@ class MunchApp:
         if self._available_cameras is None:
             self._available_cameras = detect_cameras()
         self._settings_window = SettingsWindow(
-            self.root, self.recognizer,
+            self.root, self.recognizer, self.mouse,
             on_calibrate=self._on_calibrate_click,
             show_overlay_var=self.show_overlay_var,
             on_overlay_changed=self._on_overlay_setting_changed,
@@ -215,6 +265,58 @@ class MunchApp:
         self.camera_index = new_index
         self._settings["camera_index"] = new_index
         settings.save(self._settings)
+
+    # ------------------------------------------------------------------
+    # On-screen keyboard + dictation, both reachable from the side dock
+    # that only appears while MUNCH is armed (see _update_dock_visibility).
+    def _toggle_keyboard(self):
+        if self._keyboard_overlay is not None:
+            self._keyboard_overlay.close()
+            return
+        self._keyboard_overlay = KeyboardOverlay(self.root, self.keyboard, self._on_keyboard_closed)
+        self.side_dock.set_keyboard_state(True)
+
+    def _on_keyboard_closed(self):
+        self._keyboard_overlay = None
+        self.side_dock.set_keyboard_state(False)
+
+    def _toggle_mic(self):
+        if self.speech.is_recording():
+            self.side_dock.set_mic_state("transcribing")
+            self.speech.stop_recording_and_transcribe(self._on_transcription_ready)
+        else:
+            self.speech.start_recording()
+            self.side_dock.set_mic_state("recording")
+
+    def _on_transcription_ready(self, text):
+        # Called from the transcription background thread — hop back onto
+        # the Tk thread before touching any widget or typing anything.
+        self.root.after(0, lambda: self._finish_transcription(text))
+
+    def _finish_transcription(self, text):
+        self.side_dock.set_mic_state("idle")
+        if text:
+            self.keyboard.type_text(text)
+
+    def _update_dock_visibility(self):
+        should_show = self.munch_on and self.recognizer.armed
+        if should_show and not self._dock_visible:
+            self.side_dock.show()
+            self._dock_visible = True
+        elif not should_show and self._dock_visible:
+            self.side_dock.hide()
+            self._dock_visible = False
+
+        if not should_show:
+            # Dropping out of ARMED (disarmed, or MUNCH disabled outright)
+            # means you've lost the gesture control that opened these —
+            # leaving the keyboard open or a recording running would be
+            # stuck state with no way back in without re-arming first.
+            if self._keyboard_overlay is not None:
+                self._toggle_keyboard()
+            if self.speech.is_recording():
+                self.speech.stop_recording_and_transcribe(lambda _text: None)
+                self.side_dock.set_mic_state("idle")
 
     # ------------------------------------------------------------------
     # Calibration: started from Settings, but both corners are confirmed
@@ -278,26 +380,50 @@ class MunchApp:
     # ------------------------------------------------------------------
     def _loop(self):
         ok, frame = self.capture.read()
+
         if ok:
-            frame = cv2.flip(frame, 1)
-            frame = cv2.resize(frame, (config.FRAME_WIDTH, config.FRAME_HEIGHT))
+            self._camera_fail_streak = 0
+            self._camera_lost = False
+            try:
+                frame = cv2.flip(frame, 1)
+                frame = cv2.resize(frame, (config.FRAME_WIDTH, config.FRAME_HEIGHT))
 
-            landmarks, annotated = self.tracker.process(frame)
-            self.last_landmarks = landmarks
-            events = self.recognizer.update(landmarks, bypass_arm=(self._calibration_step != 0))
+                landmarks, annotated = self.tracker.process(frame)
+                self.last_landmarks = landmarks
+                events = self.recognizer.update(landmarks, bypass_arm=(self._calibration_step != 0))
 
-            if self._calibration_step != 0:
-                self._handle_calibration_events(events)
-                norm_pos = palm_center(landmarks) if landmarks else None
-                self._calibration_overlay.update_tracking(norm_pos)
-            elif self.munch_on:
-                self.mouse.handle_events(events)
+                if self._calibration_step != 0:
+                    self._handle_calibration_events(events)
+                    norm_pos = palm_center(landmarks) if landmarks else None
+                    self._calibration_overlay.update_tracking(norm_pos)
+                elif self.munch_on:
+                    self.mouse.handle_events(events)
 
-            self._update_cursor_hud()
-            self._render_frame(annotated)
-            self._update_status()
+                self._update_cursor_hud()
+                self._render_frame(annotated)
+            except Exception:
+                # A single bad frame (corrupt read, a model hiccup)
+                # shouldn't take the whole app down — skip it and
+                # continue on the next tick.
+                pass
+        else:
+            self._camera_fail_streak += 1
+            if self._camera_fail_streak >= _CAMERA_FAILURE_LIMIT:
+                self._camera_lost = True
+                self._try_reconnect_camera()
 
+        self._update_dock_visibility()
+        self._update_status()
         self.root.after(config.LOOP_INTERVAL_MS, self._loop)
+
+    def _try_reconnect_camera(self):
+        now = time.monotonic()
+        if now - self._last_reconnect_attempt < _CAMERA_RECONNECT_INTERVAL_MS / 1000:
+            return
+        self._last_reconnect_attempt = now
+        if self.capture.isOpened():
+            self.capture.release()
+        self.capture = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
 
     def _update_cursor_hud(self):
         show = (
@@ -327,7 +453,9 @@ class MunchApp:
             instant_fps = 1.0 / dt
             self._fps += (instant_fps - self._fps) * 0.2
 
-        if not self.munch_on:
+        if self._camera_lost:
+            led_color, word = "#FF3864", "CAMERA LOST"
+        elif not self.munch_on:
             led_color, word = "#888888", "DISABLED"
         elif self.recognizer.armed:
             led_color, word = GREEN, "ACTIVE"
@@ -346,8 +474,15 @@ class MunchApp:
             self.capture.release()
         self.tracker.close()
         self.cursor_hud.destroy()
+        self.side_dock.destroy()
+        if self._keyboard_overlay:
+            self._keyboard_overlay.close()
         if self._calibration_overlay:
             self._calibration_overlay.destroy()
+        if self._settings_window:
+            self._settings_window.close()
+        if self._cheat_sheet:
+            self._cheat_sheet.close()
         self.root.destroy()
 
 

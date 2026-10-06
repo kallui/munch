@@ -1,15 +1,16 @@
 """Gesture state machine: turns per-frame hand landmarks into mouse events.
 
 Landmarks follow the MediaPipe Hands layout (21 points, normalized x/y/z).
-Priority per frame: wake/arm pose > armed-gate > left pinch > right pinch >
-scroll pose > plain move — so gestures don't fight each other, and nothing
-below the gate can act while MUNCH is "watching" (disarmed).
+Priority per frame: wake/arm pose > armed-gate > left/right/middle/double
+pinch (in that order) > scroll pose > plain move — so gestures don't
+fight each other, and nothing below the gate can act while MUNCH is
+"watching" (disarmed).
 """
 
 import math
 import time
 
-from munch import bindings, config
+from munch import bindings, config, tuning
 
 WRIST = 0
 THUMB_IP, THUMB_TIP = 3, 4
@@ -45,7 +46,31 @@ def _finger_extended(landmarks, tip_idx, pip_idx, ratio=1.15):
 _PINCH_SOURCES = {
     "index": (INDEX_TIP, INDEX_PIP),
     "middle": (MIDDLE_TIP, MIDDLE_PIP),
+    "ring": (RING_TIP, RING_PIP),
+    "pinky": (PINKY_TIP, PINKY_PIP),
 }
+
+# Processing order each frame — matters only when more than one pinch
+# distance happens to be close in the same frame (e.g. mid hand-shape
+# transition); first-in-order wins. "double" has no hold-to-drag
+# behavior (a held double-click has no OS equivalent), so it's a plain
+# quick-pinch-only action.
+_ACTION_PRIORITY = ("left", "right", "middle", "double")
+_DRAG_CAPABLE_ACTIONS = {"left", "right", "middle"}
+
+# Hysteresis gap between the (tunable) pinch-on threshold and the
+# pinch-off threshold, preserved from the original fixed 0.055/0.075 pair
+# so adjusting sensitivity doesn't also need a second slider just to keep
+# the anti-flicker gap sane.
+_PINCH_HYSTERESIS_GAP = config.PINCH_OFF_THRESHOLD - config.PINCH_ON_THRESHOLD
+
+
+def _pinch_gesture_name(action):
+    return f"{action}_pinch"
+
+
+def _drag_gesture_name(action):
+    return "drag" if action == "left" else f"{action}_drag"  # "drag" kept for the original left-drag name
 
 
 def _fingers_spread(landmarks):
@@ -65,15 +90,17 @@ def _fingers_spread(landmarks):
 
 class GestureRecognizer:
     def __init__(self):
-        self.bindings = bindings.load_bindings()  # {"left": "index"|"middle", "right": the other}
+        self.bindings = bindings.load_bindings()  # {action: finger}, one finger per action
+        self.tuning = tuning.load_tuning()  # cursor_smoothing_alpha, drag_hold_seconds, pinch_on_threshold
 
-        self.left_pinch_active = False
-        self.left_pinch_start = 0.0
-        self.left_dragging = False
-
-        self.right_pinch_active = False
-        self.right_pinch_start = 0.0
-        self.right_dragging = False
+        # Per-action pinch state: active (currently pinched), start (when
+        # the pinch began, for drag-hold timing), dragging (crossed the
+        # hold threshold), confirm (consecutive close-distance frames
+        # before a pinch-down is trusted — see PINCH_CONFIRM_FRAMES).
+        self._pinch = {
+            action: {"active": False, "start": 0.0, "dragging": False, "confirm": 0}
+            for action in bindings.ACTIONS
+        }
 
         self.scroll_baseline_y = None
 
@@ -86,16 +113,6 @@ class GestureRecognizer:
         # or crosses the edge — without this, that instability can register
         # as a spurious click/scroll.
         self._hand_streak = 0
-
-        # Consecutive frames a pinch distance has stayed under threshold
-        # before it's confirmed as a real pinch-down. Right-click
-        # (thumb+middle) and scroll (index+middle extended) both involve the
-        # middle finger, and the thumb can graze past the middle fingertip
-        # for a frame or two while the hand is still mid-transition into the
-        # scroll shape — requiring a few consecutive close frames filters
-        # that out without adding noticeable click latency.
-        self._left_pinch_frames = 0
-        self._right_pinch_frames = 0
 
         # Wake/arm gesture: MUNCH starts every session "watching" (disarmed)
         # and ignores the hand entirely until an open palm is held for
@@ -110,15 +127,16 @@ class GestureRecognizer:
         """Returns a list of events for this frame, e.g.:
         [("move", x, y)], [("left_down",)], [("left_up",)], [("left_click",)],
         [("right_down",)], [("right_up",)], [("right_click",)],
-        [("scroll", ticks)]
+        [("middle_down",)], [("middle_up",)], [("middle_click",)],
+        [("double_click",)], [("scroll", ticks)]
 
         bypass_arm=True skips the armed-gate for this call (used during
         calibration, which is already a deliberate, hands-on flow).
         """
         if landmarks is None:
             self._hand_streak = 0
-            self._left_pinch_frames = 0
-            self._right_pinch_frames = 0
+            for state in self._pinch.values():
+                state["confirm"] = 0
             self._wake_last_time = None
             self.wake_progress = 0.0
             self.armed = False
@@ -149,7 +167,8 @@ class GestureRecognizer:
                 and _finger_extended(landmarks, PINKY_TIP, PINKY_PIP, ratio)
                 and _fingers_spread(landmarks)
             )
-            holding = stable and is_open_palm and not (self.left_pinch_active or self.right_pinch_active)
+            any_pinch_active = any(state["active"] for state in self._pinch.values())
+            holding = stable and is_open_palm and not any_pinch_active
 
             dt = (now - self._wake_last_time) if self._wake_last_time is not None else 0.0
             self._wake_last_time = now
@@ -177,65 +196,43 @@ class GestureRecognizer:
             self.current_gesture = "idle"
             return []
 
-        # Which physical pinch (thumb+index vs thumb+middle) drives left
-        # vs right click is configurable (see munch/bindings.py); resolve
-        # that here so the rest of the state machine just deals in
-        # "left"/"right" action slots like before.
-        left_tip, left_pip = _PINCH_SOURCES[self.bindings["left"]]
-        right_tip, right_pip = _PINCH_SOURCES[self.bindings["right"]]
-        left_dist = _dist(thumb, landmarks[left_tip])
-        right_dist = _dist(thumb, landmarks[right_tip])
+        # --- Pinch actions (left/right/middle click, double-click) ---
+        pinch_on = self.tuning["pinch_on_threshold"]
+        pinch_off = pinch_on + _PINCH_HYSTERESIS_GAP
+        for action in _ACTION_PRIORITY:
+            finger = self.bindings[action]
+            tip, pip = _PINCH_SOURCES[finger]
+            dist = _dist(thumb, landmarks[tip])
+            state = self._pinch[action]
 
-        # --- Left pinch (click / drag) ---
-        if self.left_pinch_active:
-            if left_dist > config.PINCH_OFF_THRESHOLD:
-                events = self._release_pinch("left")
-            else:
-                events = self._hold_pinch("left", now, pointer)
-            self.current_gesture = "drag" if self.left_dragging else "left_pinch"
-            return events
+            if state["active"]:
+                if dist > pinch_off:
+                    events = self._release_pinch(action)
+                elif action in _DRAG_CAPABLE_ACTIONS:
+                    events = self._hold_pinch(action, now, pointer)
+                else:
+                    events = []
+                self.current_gesture = (
+                    _drag_gesture_name(action) if state["dragging"] else _pinch_gesture_name(action)
+                )
+                return events
 
-        # A real pinch curls the touching finger toward the thumb, so it's
-        # no longer "extended" by the time it touches — this distinguishes
-        # it from the scroll pose's fully-extended index/middle.
-        left_approaching = (
-            stable
-            and left_dist < config.PINCH_ON_THRESHOLD
-            and not _finger_extended(landmarks, left_tip, left_pip)
-        )
-        self._left_pinch_frames = self._left_pinch_frames + 1 if left_approaching else 0
+            # A real pinch curls the touching finger toward the thumb, so
+            # it's no longer "extended" by the time it touches — this
+            # distinguishes it from the scroll pose's fully-extended
+            # index/middle.
+            approaching = (
+                stable and dist < pinch_on and not _finger_extended(landmarks, tip, pip)
+            )
+            state["confirm"] = state["confirm"] + 1 if approaching else 0
 
-        if self._left_pinch_frames >= config.PINCH_CONFIRM_FRAMES:
-            self.left_pinch_active = True
-            self.left_pinch_start = now
-            self.left_dragging = False
-            self._left_pinch_frames = 0
-            self.current_gesture = "left_pinch"
-            return []
-
-        # --- Right pinch (right click / right drag) ---
-        if self.right_pinch_active:
-            if right_dist > config.PINCH_OFF_THRESHOLD:
-                events = self._release_pinch("right")
-            else:
-                events = self._hold_pinch("right", now, pointer)
-            self.current_gesture = "right_drag" if self.right_dragging else "right_pinch"
-            return events
-
-        right_approaching = (
-            stable
-            and right_dist < config.PINCH_ON_THRESHOLD
-            and not _finger_extended(landmarks, right_tip, right_pip)
-        )
-        self._right_pinch_frames = self._right_pinch_frames + 1 if right_approaching else 0
-
-        if self._right_pinch_frames >= config.PINCH_CONFIRM_FRAMES:
-            self.right_pinch_active = True
-            self.right_pinch_start = now
-            self.right_dragging = False
-            self._right_pinch_frames = 0
-            self.current_gesture = "right_pinch"
-            return []
+            if state["confirm"] >= config.PINCH_CONFIRM_FRAMES:
+                state["active"] = True
+                state["start"] = now
+                state["dragging"] = False
+                state["confirm"] = 0
+                self.current_gesture = _pinch_gesture_name(action)
+                return []
 
         # --- Scroll pose: index + middle extended, ring + pinky curled ---
         if (
@@ -254,33 +251,25 @@ class GestureRecognizer:
         self.current_gesture = "move"
         return [("move", pointer[0], pointer[1])]
 
-    def _hold_pinch(self, side, now, pointer):
-        start_attr = f"{side}_pinch_start"
-        dragging_attr = f"{side}_dragging"
-        start = getattr(self, start_attr)
-        dragging = getattr(self, dragging_attr)
-
+    def _hold_pinch(self, action, now, pointer):
+        state = self._pinch[action]
         events = []
-        if not dragging and (now - start) >= config.DRAG_HOLD_SECONDS:
-            dragging = True
-            setattr(self, dragging_attr, True)
-            events.append((f"{side}_down",))
-        if dragging:
+        if not state["dragging"] and (now - state["start"]) >= self.tuning["drag_hold_seconds"]:
+            state["dragging"] = True
+            events.append((f"{action}_down",))
+        if state["dragging"]:
             events.append(("move", pointer[0], pointer[1]))
         return events
 
-    def _release_pinch(self, side):
-        active_attr = f"{side}_pinch_active"
-        dragging_attr = f"{side}_dragging"
-        dragging = getattr(self, dragging_attr)
-
+    def _release_pinch(self, action):
+        state = self._pinch[action]
         events = []
-        if dragging:
-            events.append((f"{side}_up",))
+        if state["dragging"]:
+            events.append((f"{action}_up",))
         else:
-            events.append((f"{side}_click",))
-        setattr(self, active_attr, False)
-        setattr(self, dragging_attr, False)
+            events.append((f"{action}_click",))
+        state["active"] = False
+        state["dragging"] = False
         return events
 
     def _scroll(self, index_tip, middle_tip):
@@ -303,6 +292,10 @@ class GestureRecognizer:
         if bindings.is_valid(new_bindings):
             self.bindings = dict(new_bindings)
 
+    def set_tuning(self, new_tuning):
+        if tuning.is_valid(new_tuning):
+            self.tuning = dict(new_tuning)
+
     def reset_wake(self):
         """Force back to disarmed/watching with a clean slate. Used when
         MUNCH mode is toggled off/on, so a stale `_wake_last_time` from
@@ -320,14 +313,11 @@ class GestureRecognizer:
         hadn't become a drag yet is just dropped — no click fires, which is
         correct since it never completed a press-and-release."""
         events = []
-        if self.left_pinch_active and self.left_dragging:
-            events.append(("left_up",))
-        if self.right_pinch_active and self.right_dragging:
-            events.append(("right_up",))
+        for action, state in self._pinch.items():
+            if state["active"] and state["dragging"]:
+                events.append((f"{action}_up",))
+            state["active"] = False
+            state["dragging"] = False
 
-        self.left_pinch_active = False
-        self.left_dragging = False
-        self.right_pinch_active = False
-        self.right_dragging = False
         self.scroll_baseline_y = None
         return events

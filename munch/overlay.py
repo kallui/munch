@@ -17,6 +17,9 @@ GESTURE_STYLES = {
     "drag": ("DRAGGING", GREEN),
     "right_pinch": ("RIGHT CLICK", PURPLE),
     "right_drag": ("RIGHT DRAG", PURPLE),
+    "middle_pinch": ("MIDDLE CLICK", "#3A86FF"),
+    "middle_drag": ("MIDDLE DRAG", "#3A86FF"),
+    "double_pinch": ("DOUBLE CLICK", YELLOW),
     "scroll": ("SCROLLING", "#3A86FF"),
 }
 
@@ -84,6 +87,13 @@ class CursorHud:
         if not self._visible:
             self._win.deiconify()
             self._visible = True
+        # Other topmost windows (the keyboard overlay, the side dock) can
+        # still end up stacked above this one, since "topmost" only means
+        # "above normal windows," not "above other topmost windows" — so
+        # the click-feedback tag needs to actively reassert itself on top
+        # every frame, or it silently renders underneath whatever topmost
+        # window was created most recently.
+        self._win.lift()
 
     def _draw_wake_dial(self, c, r, progress):
         # Dark track circle, bordered in black, with a flat yellow pie

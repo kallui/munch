@@ -1,9 +1,10 @@
-"""Loads/saves which pinch shape triggers which click action.
+"""Loads/saves which pinch shape (thumb + one other finger) triggers
+which click action.
 
-Only two pinch shapes exist (thumb+index, thumb+middle), so "custom
-binding" for now means choosing which of the two drives left-click/drag
-and which drives right-click/drag — the other slot always gets whichever
-shape isn't picked, since there are exactly two of each.
+Four pinch shapes exist (thumb+index, thumb+middle, thumb+ring,
+thumb+pinky) mapped to four actions (left-click/drag, right-click/drag,
+double-click, middle-click) — "custom binding" means a permutation of
+fingers across actions, one finger per action, no finger shared.
 """
 
 import json
@@ -11,7 +12,10 @@ import os
 
 _BINDINGS_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "bindings.json")
 
-DEFAULT = {"left": "index", "right": "middle"}
+ACTIONS = ("left", "right", "double", "middle")
+FINGERS = ("index", "middle", "ring", "pinky")
+
+DEFAULT = {"left": "index", "right": "middle", "double": "ring", "middle": "pinky"}
 
 
 def default_bindings():
@@ -19,12 +23,12 @@ def default_bindings():
 
 
 def is_valid(bindings):
-    return (
-        isinstance(bindings, dict)
-        and bindings.get("left") in ("index", "middle")
-        and bindings.get("right") in ("index", "middle")
-        and bindings["left"] != bindings["right"]
-    )
+    if not isinstance(bindings, dict):
+        return False
+    if set(bindings.keys()) != set(ACTIONS):
+        return False
+    values = list(bindings.values())
+    return set(values) == set(FINGERS) and len(values) == len(set(values))
 
 
 def load_bindings():

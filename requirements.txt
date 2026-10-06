@@ -4,3 +4,7 @@ pynput
 pillow
 numpy
 pygrabber
+faster-whisper
+sounddevice
+resvg-py
+pywin32
