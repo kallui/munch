@@ -12,6 +12,7 @@ swap against yet, so they're shown as fixed rows rather than dropdowns.
 import tkinter as tk
 
 from munch import bindings as bindings_module
+from munch import custom_bindings as custom_bindings_module
 from munch import tuning as tuning_module
 from munch.theme import BG, BORDER_W, INK, PURPLE, YELLOW
 from munch.widgets import RoundedButton
@@ -105,6 +106,61 @@ class _SliderWidget:
 
     def pack(self, **kwargs):
         self.canvas.pack(**kwargs)
+
+
+class _KeyCapture:
+    """A "click to set key" field — captures the next real key/modifier
+    combo pressed anywhere in the Settings window, via KeyPress (and
+    tracking modifier KeyPress/Release separately, rather than relying
+    on event.state's platform-specific bitmask) so it works for both a
+    lone key and a held-modifier combo."""
+
+    _MODIFIER_KEYSYMS = {
+        "Control_L": "ctrl", "Control_R": "ctrl",
+        "Alt_L": "alt", "Alt_R": "alt",
+        "Shift_L": "shift", "Shift_R": "shift",
+    }
+
+    def __init__(self, parent, window, initial_keys, on_change):
+        self._window = window
+        self._on_change = on_change
+        self._listening = False
+        self._held_modifiers = []
+
+        self.label = tk.Label(
+            parent, text=self._format(initial_keys), font=FONT_VALUE, bg="white", fg=INK,
+            anchor="w", padx=8, pady=4, cursor="hand2",
+        )
+        _bordered(self.label)
+        self.label.bind("<Button-1>", self._start_listening)
+
+    def _format(self, keys):
+        return "+".join(keys) if keys else "Click to set key..."
+
+    def _start_listening(self, _event=None):
+        if self._listening:
+            return
+        self._listening = True
+        self._held_modifiers = []
+        self.label.configure(text="Press keys...", bg=YELLOW)
+        self._window.bind("<KeyPress>", self._on_key_press)
+
+    def _on_key_press(self, event):
+        keysym = event.keysym
+        if keysym in self._MODIFIER_KEYSYMS:
+            name = self._MODIFIER_KEYSYMS[keysym]
+            if name not in self._held_modifiers:
+                self._held_modifiers.append(name)
+            return
+        key = keysym.lower()
+        combo = self._held_modifiers + [key]
+        self._listening = False
+        self._window.unbind("<KeyPress>")
+        self.label.configure(text=self._format(combo), bg="white")
+        self._on_change(combo)
+
+    def pack(self, **kwargs):
+        self.label.pack(**kwargs)
 
 
 def _add_tooltip(widget, text):
@@ -239,6 +295,43 @@ class SettingsWindow:
             text="⌖  CALIBRATE", font=FONT_BUTTON, fg="white", bg=BG,
         ).pack(padx=16, pady=(0, 16))
 
+        self._custom_state = custom_bindings_module.load_state()
+
+        tk.Label(self.win, text="CUSTOM GESTURES", font=FONT_HEADING, bg=BG, fg=INK).pack(
+            anchor="w", padx=16, pady=(14, 6)
+        )
+        preset_row = tk.Frame(self.win, bg=BG)
+        preset_row.pack(fill="x", padx=16, pady=4)
+        tk.Label(preset_row, text="Preset", font=FONT_LABEL, bg=BG, fg=INK,
+                 width=_ROW_LABEL_WIDTH, anchor="w").pack(side="left")
+        self._preset_btn = tk.Label(
+            preset_row, text=self._custom_state["active"] + _DROPDOWN_ARROW, font=FONT_VALUE,
+            bg="white", fg=INK, anchor="w", padx=8, pady=4, cursor="hand2",
+        )
+        _bordered(self._preset_btn)
+        self._preset_btn.pack(side="left", fill="x", expand=True)
+        self._preset_btn.bind("<Button-1>", lambda _e: self._open_preset_popup())
+
+        preset_actions = tk.Frame(self.win, bg=BG)
+        preset_actions.pack(fill="x", padx=16, pady=(0, 10))
+        RoundedButton(
+            preset_actions, 110, 28, color="#DDDDDD", on_click=self._save_as_preset,
+            text="SAVE AS NEW", font=("Segoe UI", 9, "bold"), bg=BG,
+        ).pack(side="left", padx=(0, 6))
+        RoundedButton(
+            preset_actions, 90, 28, color="#DDDDDD", on_click=self._delete_preset,
+            text="DELETE", font=("Segoe UI", 9, "bold"), bg=BG,
+        ).pack(side="left")
+
+        self._binding_rows_frame = tk.Frame(self.win, bg=BG)
+        self._binding_rows_frame.pack(fill="x")
+        self._rebuild_binding_rows()
+
+        RoundedButton(
+            self.win, btn_width, 30, color="#DDDDDD", on_click=self._add_binding_row,
+            text="+ ADD BINDING", font=FONT_BUTTON, bg=BG,
+        ).pack(padx=16, pady=(4, 18))
+
     # ------------------------------------------------------------------
     def _dropdown_row(self, label_text, options, initial_value, on_select):
         """A label + a fully custom dropdown. tk.Menu's popup renders via
@@ -260,43 +353,44 @@ class SettingsWindow:
 
         def choose(option):
             btn.configure(text=option + _DROPDOWN_ARROW)
-            self._close_popup()
             on_select(option)
 
-        def open_popup(_event=None):
-            if self._active_popup is not None:
-                self._close_popup()
-                return
-
-            btn.update_idletasks()
-            x = btn.winfo_rootx()
-            y = btn.winfo_rooty() + btn.winfo_height()
-            width = max(btn.winfo_width(), 140)
-
-            popup = tk.Toplevel(self.win)
-            popup.overrideredirect(True)
-            popup.attributes("-topmost", True)
-            popup.configure(bg=INK)  # the 2px ring around `inner` reads as its border
-
-            inner = tk.Frame(popup, bg="white")
-            inner.pack(padx=2, pady=2)
-            for option in options:
-                option_row = tk.Label(
-                    inner, text=option, font=FONT_VALUE, bg="white", fg=INK,
-                    anchor="w", padx=8, pady=6, cursor="hand2", width=max(width // 7, 16),
-                )
-                option_row.pack(fill="x")
-                option_row.bind("<Enter>", lambda _e, w=option_row: w.configure(bg=YELLOW))
-                option_row.bind("<Leave>", lambda _e, w=option_row: w.configure(bg="white"))
-                option_row.bind("<Button-1>", lambda _e, o=option: choose(o))
-
-            popup.geometry(f"+{x}+{y}")
-            popup.bind("<FocusOut>", lambda _e: self._close_popup())
-            popup.focus_force()
-            self._active_popup = popup
-
-        btn.bind("<Button-1>", open_popup)
+        btn.bind("<Button-1>", lambda _e: self._popup_choice_list(btn, options, choose))
         return btn
+
+    def _popup_choice_list(self, anchor_widget, options, on_choose):
+        """Borderless-popup list anchored under `anchor_widget` — shared
+        by the finger/camera dropdowns, the preset picker, and the
+        per-row gesture picker."""
+        if self._active_popup is not None:
+            self._close_popup()
+
+        anchor_widget.update_idletasks()
+        x = anchor_widget.winfo_rootx()
+        y = anchor_widget.winfo_rooty() + anchor_widget.winfo_height()
+        width = max(anchor_widget.winfo_width(), 140)
+
+        popup = tk.Toplevel(self.win)
+        popup.overrideredirect(True)
+        popup.attributes("-topmost", True)
+        popup.configure(bg=INK)
+
+        inner = tk.Frame(popup, bg="white")
+        inner.pack(padx=2, pady=2)
+        for option in options:
+            option_row = tk.Label(
+                inner, text=option, font=FONT_VALUE, bg="white", fg=INK,
+                anchor="w", padx=8, pady=6, cursor="hand2", width=max(width // 7, 16),
+            )
+            option_row.pack(fill="x")
+            option_row.bind("<Enter>", lambda _e, w=option_row: w.configure(bg=YELLOW))
+            option_row.bind("<Leave>", lambda _e, w=option_row: w.configure(bg="white"))
+            option_row.bind("<Button-1>", lambda _e, o=option: (self._close_popup(), on_choose(o)))
+
+        popup.geometry(f"+{x}+{y}")
+        popup.bind("<FocusOut>", lambda _e: self._close_popup())
+        popup.focus_force()
+        self._active_popup = popup
 
     def _close_popup(self):
         if self._active_popup is not None:
@@ -375,6 +469,143 @@ class SettingsWindow:
     def _calibrate_clicked(self):
         self.close()
         self._on_calibrate()
+
+    # ------------------------------------------------------------------
+    def _active_bindings(self):
+        return self._custom_state["presets"][self._custom_state["active"]]
+
+    def _rebuild_binding_rows(self):
+        for child in self._binding_rows_frame.winfo_children():
+            child.destroy()
+        for gesture, keys in self._active_bindings().items():
+            self._binding_row(gesture, keys)
+
+    def _binding_row(self, gesture, keys):
+        row = tk.Frame(self._binding_rows_frame, bg=BG)
+        row.pack(fill="x", padx=16, pady=4)
+
+        gesture_btn = tk.Label(
+            row, text=custom_bindings_module.GESTURE_LABELS[gesture] + _DROPDOWN_ARROW,
+            font=FONT_VALUE, bg="white", fg=INK, anchor="w", padx=8, pady=4,
+            cursor="hand2", width=16,
+        )
+        _bordered(gesture_btn)
+        gesture_btn.pack(side="left", padx=(0, 6))
+        gesture_btn.bind("<Button-1>", lambda _e, g=gesture, b=gesture_btn: self._open_gesture_popup(g, b))
+
+        capture = _KeyCapture(row, self.win, keys, lambda new_keys, g=gesture: self._on_key_change(g, new_keys))
+        capture.pack(side="left", fill="x", expand=True, padx=(0, 6))
+
+        remove_btn = tk.Label(
+            row, text="×", font=("Segoe UI", 12, "bold"), bg=BG, fg=INK, cursor="hand2", padx=6,
+        )
+        remove_btn.pack(side="left")
+        remove_btn.bind("<Button-1>", lambda _e, g=gesture: self._remove_binding(g))
+
+    def _unused_gestures(self):
+        used = set(self._active_bindings().keys())
+        return [g for g in custom_bindings_module.GESTURES if g not in used]
+
+    def _add_binding_row(self):
+        available = self._unused_gestures()
+        if not available:
+            return
+        self._active_bindings()[available[0]] = []
+        self._rebuild_binding_rows()
+
+    def _remove_binding(self, gesture):
+        self._active_bindings().pop(gesture, None)
+        self._apply_custom_bindings()
+        self._rebuild_binding_rows()
+
+    def _open_gesture_popup(self, gesture, anchor_widget):
+        choices = [custom_bindings_module.GESTURE_LABELS[g] for g in self._unused_gestures()]
+        current_label = custom_bindings_module.GESTURE_LABELS[gesture]
+        if current_label not in choices:
+            choices = [current_label] + choices
+
+        def choose(label):
+            new_gesture = next(
+                g for g, l in custom_bindings_module.GESTURE_LABELS.items() if l == label
+            )
+            if new_gesture == gesture:
+                return
+            bindings_dict = self._active_bindings()
+            bindings_dict[new_gesture] = bindings_dict.pop(gesture, [])
+            self._apply_custom_bindings()
+            self._rebuild_binding_rows()
+
+        self._popup_choice_list(anchor_widget, choices, choose)
+
+    def _on_key_change(self, gesture, keys):
+        self._active_bindings()[gesture] = keys
+        self._apply_custom_bindings()
+
+    def _apply_custom_bindings(self):
+        active = custom_bindings_module.active_bindings(self._custom_state)
+        self.recognizer.set_custom_bindings(active)
+        custom_bindings_module.save_state(self._custom_state)
+
+    def _open_preset_popup(self):
+        names = list(self._custom_state["presets"].keys())
+
+        def choose(name):
+            self._custom_state["active"] = name
+            self._preset_btn.configure(text=name + _DROPDOWN_ARROW)
+            self._apply_custom_bindings()
+            self._rebuild_binding_rows()
+
+        self._popup_choice_list(self._preset_btn, names, choose)
+
+    def _save_as_preset(self):
+        self._prompt_name("New preset name:", self._create_preset)
+
+    def _create_preset(self, name):
+        name = name.strip()
+        if not name or name in self._custom_state["presets"]:
+            return
+        self._custom_state["presets"][name] = dict(self._active_bindings())
+        self._custom_state["active"] = name
+        self._preset_btn.configure(text=name + _DROPDOWN_ARROW)
+        self._apply_custom_bindings()
+        self._rebuild_binding_rows()
+
+    def _delete_preset(self):
+        name = self._custom_state["active"]
+        if name == custom_bindings_module.DEFAULT_PRESET_NAME:
+            return
+        del self._custom_state["presets"][name]
+        self._custom_state["active"] = custom_bindings_module.DEFAULT_PRESET_NAME
+        self._preset_btn.configure(text=self._custom_state["active"] + _DROPDOWN_ARROW)
+        self._apply_custom_bindings()
+        self._rebuild_binding_rows()
+
+    def _prompt_name(self, label_text, on_submit):
+        win = tk.Toplevel(self.win)
+        win.overrideredirect(True)
+        win.attributes("-topmost", True)
+        win.configure(bg=INK)
+        inner = tk.Frame(win, bg=BG)
+        inner.pack(padx=2, pady=2)
+        tk.Label(inner, text=label_text, font=FONT_LABEL, bg=BG, fg=INK).pack(
+            anchor="w", padx=10, pady=(10, 4)
+        )
+        entry = tk.Entry(inner, font=FONT_VALUE, bg="white", fg=INK, highlightbackground=INK,
+                          highlightthickness=1, width=24)
+        entry.pack(padx=10, pady=(0, 10))
+        entry.focus_set()
+
+        def submit(_event=None):
+            value = entry.get()
+            win.destroy()
+            on_submit(value)
+
+        entry.bind("<Return>", submit)
+        RoundedButton(inner, 80, 26, color="#DDDDDD", on_click=submit, text="OK",
+                      font=("Segoe UI", 9, "bold"), bg=BG).pack(pady=(0, 10))
+        x = self.win.winfo_rootx() + 60
+        y = self.win.winfo_rooty() + 60
+        win.geometry(f"+{x}+{y}")
 
     def close(self):
         self._close_popup()
