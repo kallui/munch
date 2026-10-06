@@ -5,6 +5,7 @@ stale hardcoded list."""
 import tkinter as tk
 
 from munch.theme import BG, INK
+from munch import custom_bindings as custom_bindings_module
 
 FONT_HEADING = ("Segoe UI", 13, "bold")
 FONT_ROW = ("Segoe UI", 10)
@@ -33,13 +34,27 @@ class CheatSheet:
         for action in _ACTION_ORDER:
             finger = recognizer.bindings[action]
             self._row(_ACTION_LABELS[action], _FINGER_LABELS[finger])
-        self._row("Scroll", "Index + middle extended, move hand")
+        self._row("Scroll", "Index + middle extended, together")
         self._hint(
             "Hold fingers up like a remote, level with the camera — not "
-            "pointed at it. Tilt down to scroll down, up to scroll up."
+            "pointed at it. Keep index and middle together, like pointing "
+            "a gun, to scroll; tilt down to scroll down, up to scroll up. "
+            "Spread them apart for the peace-sign gesture instead."
         )
         self._row("Wake / arm", "Open palm, spread, hold ~2s")
         self._row("Disarm", "Hand leaves frame")
+
+        custom_state = custom_bindings_module.load_state()
+        active = custom_bindings_module.active_bindings(custom_state)
+        if active:
+            tk.Label(self.win, text="CUSTOM GESTURES", font=FONT_HEADING, bg=BG, fg=INK).pack(
+                anchor="w", padx=16, pady=(14, 6)
+            )
+            for gesture, keys in active.items():
+                self._row(
+                    custom_bindings_module.GESTURE_LABELS[gesture],
+                    custom_bindings_module.format_combo(keys),
+                )
 
         tk.Label(
             self.win, text="Open Settings to rebind clicks or tune sensitivity.",
