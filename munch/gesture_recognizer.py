@@ -2,28 +2,45 @@
 
 Landmarks follow the MediaPipe Hands layout (21 points, normalized x/y/z).
 Priority per frame: wake/arm pose > armed-gate > left/right/middle/double
-pinch (in that order) > slap (velocity-gated) > static custom gestures
-(OK sign / finger counts / peace sign) > scroll pose > plain move — so
-gestures don't fight each other, and nothing below the gate can act
-while MUNCH is "watching" (disarmed).
+pinch (in that order) > scroll pose > plain move — so gestures don't
+fight each other, and nothing below the gate can act while MUNCH is
+"watching" (disarmed).
 """
 
+import math
 import time
-from collections import deque
 
-from munch import bindings, config, custom_bindings, custom_gestures, tuning
-from munch import hand_landmarks as _hl
-from munch.hand_landmarks import (
-    INDEX_MCP, INDEX_PIP, INDEX_TIP, MIDDLE_MCP, MIDDLE_PIP, MIDDLE_TIP,
-    PINKY_MCP, PINKY_PIP, PINKY_TIP, RING_MCP, RING_PIP, RING_TIP,
-    THUMB_TIP, WRIST, palm_center,
-)
-from munch.hand_landmarks import dist as _dist
-from munch.hand_landmarks import finger_extended as _finger_extended
+from munch import bindings, config, tuning
+
+WRIST = 0
+THUMB_IP, THUMB_TIP = 3, 4
+INDEX_MCP, INDEX_PIP, INDEX_TIP = 5, 6, 8
+MIDDLE_MCP, MIDDLE_PIP, MIDDLE_TIP = 9, 10, 12
+RING_MCP, RING_PIP, RING_TIP = 13, 14, 16
+PINKY_MCP, PINKY_PIP, PINKY_TIP = 17, 18, 20
+
+_PALM_LANDMARKS = (WRIST, INDEX_MCP, MIDDLE_MCP, RING_MCP, PINKY_MCP)
 
 
-def _fingers_spread(landmarks):
-    return _hl.fingers_spread(landmarks, config.WAKE_MIN_SPREAD_RATIO)
+def _dist(a, b):
+    return math.hypot(a[0] - b[0], a[1] - b[1])
+
+
+def palm_center(landmarks):
+    """Centroid of the wrist + four knuckle (MCP) joints — stays stable
+    while fingers articulate for a pinch, unlike a fingertip. Used to
+    drive cursor position so clicking doesn't flick the cursor off-target
+    (pinch/click detection stays fingertip-based, fully decoupled)."""
+    xs = sum(landmarks[i][0] for i in _PALM_LANDMARKS) / len(_PALM_LANDMARKS)
+    ys = sum(landmarks[i][1] for i in _PALM_LANDMARKS) / len(_PALM_LANDMARKS)
+    return xs, ys
+
+
+def _finger_extended(landmarks, tip_idx, pip_idx, ratio=1.15):
+    wrist = landmarks[WRIST]
+    tip = landmarks[tip_idx]
+    pip = landmarks[pip_idx]
+    return _dist(wrist, tip) > _dist(wrist, pip) * ratio
 
 
 _PINCH_SOURCES = {
@@ -56,6 +73,21 @@ def _drag_gesture_name(action):
     return "drag" if action == "left" else f"{action}_drag"  # "drag" kept for the original left-drag name
 
 
+def _fingers_spread(landmarks):
+    """True if adjacent fingertips (index-middle-ring-pinky) are clearly
+    apart, not just extended-but-together — distinguishes a deliberate
+    "spread open palm" from a flat hand with fingers held side-by-side
+    (e.g. pressed against a cheek during skincare)."""
+    hand_scale = _dist(landmarks[WRIST], landmarks[MIDDLE_TIP])
+    if hand_scale == 0:
+        return False
+    tips = (INDEX_TIP, MIDDLE_TIP, RING_TIP, PINKY_TIP)
+    for a, b in zip(tips, tips[1:]):
+        if _dist(landmarks[a], landmarks[b]) < config.WAKE_MIN_SPREAD_RATIO * hand_scale:
+            return False
+    return True
+
+
 class GestureRecognizer:
     def __init__(self):
         self.bindings = bindings.load_bindings()  # {action: finger}, one finger per action
@@ -72,11 +104,6 @@ class GestureRecognizer:
 
         self.scroll_baseline_y = None
         self.last_scroll_ticks = 0.0  # sign of the last scroll tick, for live direction feedback
-
-        self.custom_bindings = custom_bindings.active_bindings(custom_bindings.load_state())
-        self._custom_active = {gid: False for gid in custom_bindings.GESTURES}
-        self._palm_history = deque(maxlen=40)
-        self._slap_cooldown_until = 0.0
 
         self.current_gesture = "idle"
 
@@ -102,7 +129,7 @@ class GestureRecognizer:
         [("move", x, y)], [("left_down",)], [("left_up",)], [("left_click",)],
         [("right_down",)], [("right_up",)], [("right_click",)],
         [("middle_down",)], [("middle_up",)], [("middle_click",)],
-        [("double_click",)], [("scroll", ticks)], [("key_combo", keys)]
+        [("double_click",)], [("scroll", ticks)]
 
         bypass_arm=True skips the armed-gate for this call (used during
         calibration, which is already a deliberate, hands-on flow).
@@ -115,9 +142,6 @@ class GestureRecognizer:
             self.wake_progress = 0.0
             self.armed = False
             events = self._release_held_buttons()
-            for gid in self._custom_active:
-                self._custom_active[gid] = False
-            self._palm_history.clear()
             self.current_gesture = "idle"
             return events
 
@@ -155,7 +179,6 @@ class GestureRecognizer:
                 if self.wake_progress >= 1.0:
                     self.armed = True
                     self.wake_progress = 0.0
-                    self._custom_active["count_4"] = True
                     self.current_gesture = "armed"
                     return []
                 self.current_gesture = "wake_hold"
@@ -174,8 +197,6 @@ class GestureRecognizer:
             self.current_gesture = "idle"
             return []
 
-        self._palm_history.append((now, pointer[0]))
-
         # --- Pinch actions (left/right/middle click, double-click) ---
         pinch_on = self.tuning["pinch_on_threshold"]
         pinch_off = pinch_on + _PINCH_HYSTERESIS_GAP
@@ -184,10 +205,6 @@ class GestureRecognizer:
             tip, pip = _PINCH_SOURCES[finger]
             dist = _dist(thumb, landmarks[tip])
             state = self._pinch[action]
-
-            if not state["active"] and finger == "index" and custom_gestures.is_ok_sign(landmarks, pinch_on):
-                state["confirm"] = 0
-                continue
 
             if state["active"]:
                 if dist > pinch_off:
@@ -218,60 +235,14 @@ class GestureRecognizer:
                 self.current_gesture = _pinch_gesture_name(action)
                 return []
 
-        # --- Slap left/right: fast horizontal palm motion. Checked
-        # before the static custom-gesture poses below because slap and
-        # the open-hand "count_4" pose share the same instantaneous hand
-        # shape — the only real distinguishing signal is velocity, so a
-        # fast-moving hand should always read as a slap attempt, never
-        # as someone unrealistically holding a mid-swipe pose still.
-        if now >= self._slap_cooldown_until and custom_gestures.extended_finger_count(landmarks) >= 3:
-            direction = custom_gestures.classify_slap(self._palm_history, now)
-            if direction is not None:
-                gesture_id = f"slap_{direction}"
-                self.current_gesture = gesture_id
-                self._slap_cooldown_until = now + config.SLAP_COOLDOWN_SECONDS
-                self._palm_history.clear()
-                for gid in self._custom_active:
-                    self._custom_active[gid] = False
-                if self.custom_bindings.get(gesture_id):
-                    return self._fire_custom_gesture(gesture_id)
-                return [("move", pointer[0], pointer[1])]
-
-        # --- Custom gesture library (OK sign / finger counts / peace
-        # sign), one-shot: must release and re-form to fire again. Only
-        # claims the frame (blocking normal cursor movement) when the
-        # gesture actually has a key bound — an unbound pose still
-        # updates current_gesture for HUD/cheat-sheet feedback, but
-        # must not freeze the cursor for users with no custom bindings
-        # configured, since count_1/count_4 in particular are natural,
-        # unremarkable hand shapes to be moving the cursor with.
-        custom_gesture_id = None
-        if stable and custom_gestures.is_ok_sign(landmarks, pinch_on):
-            custom_gesture_id = "ok_sign"
-        else:
-            shape = custom_gestures.two_finger_shape(landmarks)
-            if stable and shape == "spread":
-                custom_gesture_id = "peace_sign"
-            elif stable and shape is None:
-                count = custom_gestures.extended_finger_count(landmarks)
-                if count in (1, 3, 4):
-                    custom_gesture_id = f"count_{count}"
-
-        if custom_gesture_id is not None:
-            self.current_gesture = custom_gesture_id
-            events = []
-            if not self._custom_active[custom_gesture_id]:
-                events = self._fire_custom_gesture(custom_gesture_id)
-            for gid in self._custom_active:
-                self._custom_active[gid] = gid == custom_gesture_id
-            if self.custom_bindings.get(custom_gesture_id):
-                return events
-            return [("move", pointer[0], pointer[1])]
-        for gid in self._custom_active:
-            self._custom_active[gid] = False
-
-        # --- Scroll pose: index + middle extended, together, ring+pinky curled ---
-        if stable and custom_gestures.two_finger_shape(landmarks) == "together":
+        # --- Scroll pose: index + middle extended, ring + pinky curled ---
+        if (
+            stable
+            and _finger_extended(landmarks, INDEX_TIP, INDEX_PIP)
+            and _finger_extended(landmarks, MIDDLE_TIP, MIDDLE_PIP)
+            and not _finger_extended(landmarks, RING_TIP, RING_PIP)
+            and not _finger_extended(landmarks, PINKY_TIP, PINKY_PIP)
+        ):
             self.current_gesture = "scroll"
             return self._scroll(index_tip, middle_tip)
 
@@ -326,16 +297,6 @@ class GestureRecognizer:
     def set_tuning(self, new_tuning):
         if tuning.is_valid(new_tuning):
             self.tuning = dict(new_tuning)
-
-    def set_custom_bindings(self, new_bindings):
-        if custom_bindings.is_valid_bindings(new_bindings):
-            self.custom_bindings = dict(new_bindings)
-
-    def _fire_custom_gesture(self, gesture_id):
-        keys = self.custom_bindings.get(gesture_id)
-        if not keys:
-            return []
-        return [("key_combo", keys)]
 
     def reset_wake(self):
         """Force back to disarmed/watching with a clean slate. Used when

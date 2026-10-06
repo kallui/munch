@@ -5,7 +5,6 @@ calibration.json
 settings.json
 bindings.json
 tuning.json
-custom_presets.json
 build/
 dist/
 munch_crash.log

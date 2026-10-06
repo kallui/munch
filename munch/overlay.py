@@ -21,13 +21,6 @@ GESTURE_STYLES = {
     "middle_drag": ("MIDDLE DRAG", "#3A86FF"),
     "double_pinch": ("DOUBLE CLICK", YELLOW),
     "scroll": ("SCROLLING", "#3A86FF"),
-    "ok_sign": ("OK SIGN", GREEN),
-    "count_1": ("1", YELLOW),
-    "count_3": ("3", YELLOW),
-    "count_4": ("4", YELLOW),
-    "peace_sign": ("PEACE", YELLOW),
-    "slap_left": ("SLAP ←", PURPLE),
-    "slap_right": ("SLAP →", PURPLE),
 }
 
 _TRACK_COLOR = "#555555"
