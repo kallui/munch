@@ -172,6 +172,8 @@ class GestureRecognizer:
             self.current_gesture = "idle"
             return []
 
+        self._palm_history.append((now, pointer[0]))
+
         # --- Pinch actions (left/right/middle click, double-click) ---
         pinch_on = self.tuning["pinch_on_threshold"]
         pinch_off = pinch_on + _PINCH_HYSTERESIS_GAP
@@ -215,13 +217,19 @@ class GestureRecognizer:
                 return []
 
         # --- Custom gesture library (OK sign / finger counts / peace
-        # sign), one-shot: must release and re-form to fire again ---
+        # sign), one-shot: must release and re-form to fire again. Only
+        # claims the frame (blocking normal cursor movement) when the
+        # gesture actually has a key bound — an unbound pose still
+        # updates current_gesture for HUD/cheat-sheet feedback, but
+        # must not freeze the cursor for users with no custom bindings
+        # configured, since count_1/count_4 in particular are natural,
+        # unremarkable hand shapes to be moving the cursor with.
         custom_gesture_id = None
         if stable and custom_gestures.is_ok_sign(landmarks, pinch_on):
             custom_gesture_id = "ok_sign"
         else:
             shape = custom_gestures.two_finger_shape(landmarks)
-            if shape == "spread":
+            if stable and shape == "spread":
                 custom_gesture_id = "peace_sign"
             elif stable and shape is None:
                 count = custom_gestures.extended_finger_count(landmarks)
@@ -235,7 +243,9 @@ class GestureRecognizer:
                 events = self._fire_custom_gesture(custom_gesture_id)
             for gid in self._custom_active:
                 self._custom_active[gid] = gid == custom_gesture_id
-            return events
+            if self.custom_bindings.get(custom_gesture_id):
+                return events
+            return [("move", pointer[0], pointer[1])]
         for gid in self._custom_active:
             self._custom_active[gid] = False
 
@@ -247,7 +257,6 @@ class GestureRecognizer:
         self.scroll_baseline_y = None
 
         # --- Slap left/right: fast horizontal palm motion ---
-        self._palm_history.append((now, pointer[0]))
         if now >= self._slap_cooldown_until:
             direction = custom_gestures.classify_slap(self._palm_history, now)
             if direction is not None:
