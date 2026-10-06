@@ -63,7 +63,7 @@ class CursorHud:
         self._win.withdraw()
         self._visible = False
 
-    def update(self, x, y, gesture, wake_progress=0.0):
+    def update(self, x, y, gesture, wake_progress=0.0, scroll_ticks=0.0):
         c, r = self._CENTER, self._RADIUS
         self._canvas.delete("all")
 
@@ -72,6 +72,11 @@ class CursorHud:
             self._tag.pack_forget()
         else:
             text, color = GESTURE_STYLES.get(gesture, ("", None))
+            if gesture == "scroll" and scroll_ticks:
+                # Negative ticks = scroll down (see gesture_recognizer._scroll) —
+                # shown live so hand orientation can be corrected in the moment,
+                # not just guessed from the static cheat-sheet wording.
+                text = ("↓ " if scroll_ticks < 0 else "↑ ") + text
             dot_color = color or GREEN
             dot_r = 6
             self._canvas.create_oval(

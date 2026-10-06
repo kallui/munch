@@ -436,7 +436,10 @@ class MunchApp:
         )
         if show:
             x, y = self.mouse.get_position()
-            self.cursor_hud.update(x, y, self.recognizer.current_gesture, self.recognizer.wake_progress)
+            self.cursor_hud.update(
+                x, y, self.recognizer.current_gesture, self.recognizer.wake_progress,
+                self.recognizer.last_scroll_ticks,
+            )
         else:
             self.cursor_hud.hide()
 

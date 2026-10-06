@@ -103,6 +103,7 @@ class GestureRecognizer:
         }
 
         self.scroll_baseline_y = None
+        self.last_scroll_ticks = 0.0  # sign of the last scroll tick, for live direction feedback
 
         self.current_gesture = "idle"
 
@@ -286,6 +287,7 @@ class GestureRecognizer:
         speed = min(magnitude * config.SCROLL_SPEED_SCALE, config.SCROLL_MAX_SPEED)
         direction = 1.0 if offset > 0 else -1.0
         ticks = -direction * speed  # moving hand down -> scroll down (negative ticks)
+        self.last_scroll_ticks = ticks
         return [("scroll", ticks)]
 
     def set_bindings(self, new_bindings):

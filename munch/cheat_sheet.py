@@ -34,6 +34,10 @@ class CheatSheet:
             finger = recognizer.bindings[action]
             self._row(_ACTION_LABELS[action], _FINGER_LABELS[finger])
         self._row("Scroll", "Index + middle extended, move hand")
+        self._hint(
+            "Hold fingers up like a remote, level with the camera — not "
+            "pointed at it. Tilt down to scroll down, up to scroll up."
+        )
         self._row("Wake / arm", "Open palm, spread, hold ~2s")
         self._row("Disarm", "Hand leaves frame")
 
@@ -48,6 +52,15 @@ class CheatSheet:
         tk.Label(row, text=label_text, font=("Segoe UI", 10, "bold"), bg=BG, fg=INK,
                  width=17, anchor="w").pack(side="left")
         tk.Label(row, text=value_text, font=FONT_ROW, bg=BG, fg="#444444", anchor="w").pack(side="left")
+
+    def _hint(self, text):
+        """A smaller, muted, wrapped explanation line under a row — for
+        gestures (like scroll) where the one-line pose description isn't
+        enough on its own to get right on the first try."""
+        tk.Label(
+            self.win, text=text, font=("Segoe UI", 8), bg=BG, fg="#888888",
+            wraplength=280, justify="left", anchor="w",
+        ).pack(fill="x", padx=16, pady=(0, 6))
 
     def close(self):
         self.win.destroy()
