@@ -100,7 +100,9 @@ pyinstaller munch.spec
 & "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" installer.iss
 ```
 
-PyInstaller builds the app folder, `dist\MUNCH\` with `MUNCH.exe` inside. [Inno Setup](https://jrsoftware.org/isinfo.php) (`winget install JRSoftware.InnoSetup`) packages that folder into `dist\MUNCH-Setup-<version>.exe`. The version number is set at the top of `installer.iss`.
+PyInstaller builds the app folder, `dist\MUNCH\` with `MUNCH.exe` inside. [Inno Setup](https://jrsoftware.org/isinfo.php) (`winget install JRSoftware.InnoSetup`) packages that folder into `dist\MUNCH-Setup-<version>.exe`. The version number lives in `munch/version.py`; the app shows it in Settings and the installer reads it from there.
+
+To ship an update, bump the version, rebuild both, and attach the new installer to a new GitHub release. Running it over an existing install upgrades in place and keeps the user's settings.
 
 ## Privacy
 

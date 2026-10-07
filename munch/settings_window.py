@@ -13,7 +13,8 @@ import tkinter as tk
 
 from munch import bindings as bindings_module
 from munch import tuning as tuning_module
-from munch.theme import BG, BORDER_W, INK, PURPLE, YELLOW
+from munch.theme import BG, BORDER_W, INK, MUTED, PURPLE, YELLOW
+from munch.version import VERSION
 from munch.widgets import RoundedButton, fade_in
 
 FONT_HEADING = ("Segoe UI", 12, "bold")
@@ -266,7 +267,9 @@ class SettingsWindow:
         RoundedButton(
             self.win, btn_width, 34, color=PURPLE, on_click=self._calibrate_clicked,
             text="⌖  CALIBRATE", font=FONT_BUTTON, fg="white", bg=BG,
-        ).pack(padx=16, pady=(0, 16))
+        ).pack(padx=16, pady=(0, 10))
+
+        tk.Label(self.win, text=f"MUNCH v{VERSION}", font=FONT_VALUE, bg=BG, fg=MUTED).pack(pady=(0, 12))
 
         fade_in(self.win)
 

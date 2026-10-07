@@ -8,17 +8,35 @@
 ; Build (after PyInstaller):
 ;   "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" installer.iss
 ; Output: dist\MUNCH-Setup-<version>.exe
+;
+; The version comes from munch\version.py (the app's single source of truth),
+; so bump it there, not here. MyAppName / MyAppId / MyAppVersion can be
+; overridden on the command line (/DMyAppName=...) to build isolated test
+; installers that never touch a real MUNCH install.
 
-#define MyAppName "MUNCH"
-#define MyAppVersion "1.0.0"
+#ifndef MyAppVersion
+  ; Pull "1.0.0" out of line 1 of munch\version.py:  VERSION = "1.0.0"
+  #define VersionFile FileOpen(AddBackslash(SourcePath) + "munch\version.py")
+  #define VersionLine FileRead(VersionFile)
+  #expr FileClose(VersionFile)
+  #define VersionQuoted Copy(VersionLine, Pos('"', VersionLine) + 1)
+  #define MyAppVersion Copy(VersionQuoted, 1, Pos('"', VersionQuoted) - 1)
+#endif
+#ifndef MyAppName
+  #define MyAppName "MUNCH"
+#endif
+#ifndef MyAppId
+  ; Identifies MUNCH to Windows across versions — never change it, or
+  ; upgrades will install side by side instead of replacing the old copy.
+  #define MyAppId "78659045-1A60-46FE-A37F-F12EF3C10589"
+#endif
 #define MyAppPublisher "Nicholas Januar"
+#pragma message "Building " + MyAppName + " " + MyAppVersion
 #define MyAppURL "https://github.com/kallui/munch"
 #define MyAppExeName "MUNCH.exe"
 
 [Setup]
-; AppId identifies MUNCH to Windows across versions — never change it, or
-; upgrades will install side by side instead of replacing the old copy.
-AppId={{78659045-1A60-46FE-A37F-F12EF3C10589}
+AppId={{{#MyAppId}}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
@@ -32,7 +50,7 @@ PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=dist
-OutputBaseFilename=MUNCH-Setup-{#MyAppVersion}
+OutputBaseFilename={#MyAppName}-Setup-{#MyAppVersion}
 SetupIconFile=assets\icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2/ultra64
@@ -46,6 +64,13 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+
+[InstallDelete]
+; On an upgrade, clear out the previous version's bundled libraries first.
+; Their file names carry version hashes (e.g. avcodec-63-<hash>.dll), so
+; plain overwriting would leave every old copy behind forever. Safe: user
+; settings live in %APPDATA%\MUNCH, never in here.
+Type: filesandordirs; Name: "{app}\_internal"
 
 [Files]
 Source: "dist\MUNCH\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
