@@ -209,7 +209,7 @@ class SettingsWindow:
                 _FINGER_LABELS[self._binding_state[action]],
                 lambda choice, a=action: self._on_binding_change(a, choice),
             )
-        self._fixed_row("Scroll", "Index + middle extended")
+        self._fixed_row("Scroll", "Finger gun, tilt up or down")
         self._fixed_row("Wake / arm", "Open palm, spread")
 
         self.win.update_idletasks()

@@ -34,7 +34,7 @@ The info button in the window lists the live gesture map. Settings is where you 
 
 ## Features
 
-- **Hands-off mouse.** Palm position drives the cursor. Pinches click, hold to drag, and a two-finger pose scrolls.
+- **Hands-off mouse.** Palm position drives the cursor. Pinches click, hold to drag, and a finger gun scrolls.
 - **Won't click while you eat.** MUNCH ignores your hand until you deliberately arm it, and disarms as soon as the hand leaves the frame.
 - **On-screen keyboard.** A large bottom-docked keyboard you can pinch-type into whatever app is focused. It only appears while MUNCH is armed.
 - **Dictation.** Tap the mic on the side dock and talk. A live caption shows the words as they're heard, and when you stop (or go quiet for a few seconds) the transcript is typed into the focused window. Speech recognition runs locally.
@@ -53,7 +53,7 @@ One hand at a time. Pinch bindings below are the defaults; any pinch can be swap
 | Thumb + middle pinch | Right click. Hold to right-drag. |
 | Thumb + ring pinch | Double-click. |
 | Thumb + pinky pinch | Middle click. Hold to middle-drag. |
-| Index and middle up, ring and pinky curled | Scroll. Hold the fingers like a remote, level with the camera, and tilt up or down. |
+| Finger gun | Scroll. Tilt up or down. |
 | Hand leaves the frame | Disarm. |
 
 A short pinch is a click. Holding a pinch for about half a second presses the button and drags until you release. Double-click does not drag.

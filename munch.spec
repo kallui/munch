@@ -27,6 +27,7 @@ datas = [
     ("munch/models/hand_landmarker.task", "munch/models"),
     ("assets/icon.png", "assets"),
     ("assets/icons", "assets/icons"),
+    ("assets/MUNCH Gestures Cheat Sheet Guide.png", "assets"),
 ]
 binaries = []
 hiddenimports = []
