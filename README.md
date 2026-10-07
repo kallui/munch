@@ -14,7 +14,7 @@
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-111111"></a>
 </p>
 
-Built for the stretch of a meal when your hands are dirty, full, or you just don't want to touch the keyboard. Enable it, show an open palm, and the cursor follows your hand.
+Control your Windows PC with hand gestures while you’re eating, your hands are dirty, or you just don’t want to touch your mouse and keyboard.
 
 ## Download
 
