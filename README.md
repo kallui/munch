@@ -8,10 +8,10 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/kallui/munch/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/kallui/munch?color=111111"></a>
-  <img alt="Platform" src="https://img.shields.io/badge/platform-Windows-111111">
-  <img alt="Tracking" src="https://img.shields.io/badge/tracking-on%20device-111111">
-  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-111111"></a>
+  <a href="https://github.com/kallui/munch/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/kallui/munch?color=FF3DAE"></a>
+  <img alt="Platform" src="https://img.shields.io/badge/platform-Windows-3A86FF">
+  <img alt="Tracking" src="https://img.shields.io/badge/tracking-on%20device-06D6A0">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-8338EC"></a>
 </p>
 
 Control your Windows PC with hand gestures while you’re eating, your hands are dirty, or you just don’t want to touch your mouse and keyboard.
