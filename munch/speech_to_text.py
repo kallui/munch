@@ -15,6 +15,7 @@ pass dictation has always used — so preview mistakes can never reach the
 user's text.
 """
 
+import io
 import threading
 import time
 
@@ -23,6 +24,10 @@ import sounddevice as sd
 
 _SAMPLE_RATE = 16000
 _MODEL_SIZE = "base.en"
+# The Hugging Face repo and files faster-whisper itself uses for base.en,
+# so a download done here is exactly what WhisperModel would have fetched.
+_MODEL_REPO = "Systran/faster-whisper-base.en"
+_MODEL_FILES = ["config.json", "preprocessor_config.json", "model.bin", "tokenizer.json", "vocabulary.*"]
 
 _PREVIEW_INTERVAL = 0.4  # seconds between live-preview passes
 _PREVIEW_WINDOW = 20  # seconds of most recent audio each preview pass re-transcribes
@@ -48,6 +53,13 @@ class SpeechToText:
         self._stream = None
         self._lock = threading.Lock()
         self._device = device  # sounddevice input device index, or None for the system default
+        self._model_path = None  # local folder of the downloaded model, once known
+
+        # First-use model download: written by the download thread, read
+        # by the UI loop each tick (polling, so Tk is never called from
+        # another thread). state: None, "downloading", "done", "failed".
+        self.download_state = None
+        self.download_progress = 0.0
 
         self.level = 0.0  # 0-1 loudness of the latest audio, for the live meter
         self._noise_floor = None
@@ -112,11 +124,64 @@ class SpeechToText:
             return now - self._last_voice_time > _SILENCE_AUTO_STOP
         return now - self._start_time > _NO_SPEECH_AUTO_STOP
 
+    def model_ready(self):
+        """True if the speech model is already on this machine, so
+        recording can start without a download first."""
+        if self._model is not None or self._model_path is not None:
+            return True
+        try:
+            from faster_whisper.utils import download_model
+            self._model_path = download_model(_MODEL_SIZE, local_files_only=True)
+            return True
+        except Exception:
+            return False
+
+    def start_model_download(self):
+        """Downloads the speech model (~150 MB) in the background, updating
+        download_state / download_progress as it goes."""
+        if self.download_state == "downloading":
+            return
+        self.download_state = "downloading"
+        self.download_progress = 0.0
+        threading.Thread(target=self._download_model, daemon=True).start()
+
+    def _download_model(self):
+        import huggingface_hub
+        from tqdm.auto import tqdm
+
+        owner = self
+
+        class _Progress(tqdm):
+            # huggingface_hub reports through tqdm progress bars; this one
+            # stays silent and just copies the byte count across. The
+            # "Downloading" byte bar is the real transfer — other bars
+            # (file counts, reassembly) are ignored.
+            def __init__(self, *args, **kwargs):
+                kwargs["file"] = io.StringIO()
+                super().__init__(*args, **kwargs)
+                self._is_download = kwargs.get("unit") == "B" and "Download" in str(kwargs.get("desc", ""))
+
+            def update(self, n=1):
+                super().update(n)
+                if self._is_download and self.total:
+                    owner.download_progress = min(1.0, self.n / self.total)
+
+        try:
+            self._model_path = huggingface_hub.snapshot_download(
+                _MODEL_REPO, allow_patterns=_MODEL_FILES, tqdm_class=_Progress,
+            )
+            self.download_progress = 1.0
+            self.download_state = "done"
+        except Exception:
+            self.download_state = "failed"
+
     def _load_model(self):
         with self._model_lock:
             if self._model is None:
                 from faster_whisper import WhisperModel
-                self._model = WhisperModel(_MODEL_SIZE, device="cpu", compute_type="int8")
+                # Loading from the local folder (when known) means no network
+                # check at all once the model has been downloaded.
+                self._model = WhisperModel(self._model_path or _MODEL_SIZE, device="cpu", compute_type="int8")
             return self._model
 
     def _preview_loop(self, on_preview):

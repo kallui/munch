@@ -8,11 +8,11 @@ angle.
 """
 
 import json
-import os
 
 from munch import config
+from munch.paths import user_data_path
 
-_CALIBRATION_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "calibration.json")
+_CALIBRATION_PATH = user_data_path("calibration.json")
 
 _MIN_ZONE_SIZE = 0.05  # reject degenerate calibrations (corners too close together)
 

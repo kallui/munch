@@ -8,6 +8,7 @@ import os
 import threading
 import time
 import tkinter as tk
+import traceback
 
 import cv2
 from PIL import Image, ImageDraw, ImageFont, ImageTk
@@ -20,6 +21,7 @@ from munch.keyboard_controller import KeyboardController
 from munch.keyboard_overlay import KeyboardOverlay
 from munch.mouse_controller import MouseController
 from munch.overlay import CalibrationOverlay, CursorHud
+from munch.paths import user_data_path
 from munch.settings_window import SettingsWindow, detect_cameras, detect_microphones
 from munch.side_dock import SideDock
 from munch.speech_to_text import SpeechToText
@@ -105,6 +107,7 @@ class MunchApp:
         self._keyboard_overlay = None
         self.side_dock = SideDock(root, self._toggle_keyboard, self._toggle_mic)
         self._dock_visible = False
+        self._shown_download_pct = -1
 
         # Camera robustness: a handful of consecutive bad reads is just
         # noise, but a long run means the device actually dropped — show
@@ -112,6 +115,7 @@ class MunchApp:
         self._camera_fail_streak = 0
         self._camera_lost = False
         self._last_reconnect_attempt = 0.0
+        self._logged_errors = set()
 
         self._build_ui()
         self._loop()
@@ -374,9 +378,37 @@ class MunchApp:
     def _toggle_mic(self):
         if self.speech.is_recording():
             self._stop_mic()
+        elif self.speech.download_state == "downloading":
+            return  # already fetching the model; listening starts once it's done
+        elif not self.speech.model_ready():
+            # First use: fetch the speech model, with visible progress, and
+            # start listening automatically when it lands (_poll_model_download).
+            self._shown_download_pct = -1
+            self.side_dock.set_mic_state("downloading")
+            self.speech.start_model_download()
         else:
-            self.speech.start_recording(on_preview=self._on_preview)
-            self.side_dock.set_mic_state("recording")
+            self._start_mic()
+
+    def _start_mic(self):
+        self.speech.start_recording(on_preview=self._on_preview)
+        self.side_dock.set_mic_state("recording")
+
+    def _poll_model_download(self):
+        state = self.speech.download_state
+        if state == "downloading":
+            pct = int(self.speech.download_progress * 100)
+            if pct != self._shown_download_pct:  # only redraw when the number changes
+                self._shown_download_pct = pct
+                self.side_dock.set_download_progress(self.speech.download_progress)
+        elif state == "done":
+            self.speech.download_state = None
+            if self._dock_visible:
+                self._start_mic()
+            else:
+                self.side_dock.set_mic_state("idle")  # disarmed meanwhile — don't start listening
+        elif state == "failed":
+            self.speech.download_state = None
+            self.side_dock.show_download_failed()
 
     def _stop_mic(self):
         self.side_dock.set_mic_state("transcribing")
@@ -422,6 +454,7 @@ class MunchApp:
         elif self.speech.is_recording() and self.speech.should_auto_stop():
             self._stop_mic()
 
+        self._poll_model_download()
         self.side_dock.animate(self.speech.level)
 
     # ------------------------------------------------------------------
@@ -511,8 +544,10 @@ class MunchApp:
             except Exception:
                 # A single bad frame (corrupt read, a model hiccup)
                 # shouldn't take the whole app down — skip it and
-                # continue on the next tick.
-                pass
+                # continue on the next tick. Still recorded (once per
+                # distinct error), or a failure on *every* frame would be
+                # completely invisible in the windowed, console-less app.
+                self._log_frame_error()
         elif self.capture is not None:
             self._camera_fail_streak += 1
             if self._camera_fail_streak >= _CAMERA_FAILURE_LIMIT:
@@ -522,6 +557,18 @@ class MunchApp:
         self._update_dock_visibility()
         self._update_status()
         self.root.after(config.LOOP_INTERVAL_MS, self._loop)
+
+    def _log_frame_error(self):
+        error = traceback.format_exc()
+        last_line = error.strip().splitlines()[-1]
+        if last_line in self._logged_errors:
+            return
+        self._logged_errors.add(last_line)
+        try:
+            with open(user_data_path("munch_errors.log"), "a") as f:
+                f.write(f"--- {time.strftime('%Y-%m-%d %H:%M:%S')}\n{error}\n")
+        except OSError:
+            pass
 
     def _try_reconnect_camera(self):
         now = time.monotonic()

@@ -2,11 +2,11 @@
 to use)."""
 
 import json
-import os
 
 from munch import config
+from munch.paths import user_data_path
 
-_SETTINGS_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "settings.json")
+_SETTINGS_PATH = user_data_path("settings.json")
 
 _DEFAULTS = {"show_overlay": True, "camera_index": config.CAMERA_INDEX, "mic_device": None}
 

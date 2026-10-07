@@ -1,4 +1,10 @@
-# PyInstaller spec for MUNCH — a standalone, no-Python-required .exe.
+# PyInstaller spec for MUNCH — a standalone, no-Python-required app.
+#
+# Builds a folder (dist/MUNCH/, with MUNCH.exe inside) rather than one
+# single-file exe: a single-file exe silently unpacks its whole ~190 MB
+# payload to a temp folder on *every* launch (slow start, and antivirus
+# re-scans it each time). The folder is what the installer (installer.iss)
+# packages and installs, so it's unpacked once, at install time.
 #
 # Several bundled packages ship native binaries / data files PyInstaller's
 # static import analysis can't see on its own (mediapipe's model-loading
@@ -48,9 +54,8 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,
     name="MUNCH",
     debug=False,
     bootloader_ignore_signals=False,
@@ -58,4 +63,13 @@ exe = EXE(
     upx=False,
     console=False,
     icon="assets/icon.ico",
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=False,
+    name="MUNCH",
 )

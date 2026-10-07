@@ -4,11 +4,11 @@ on top of the config.py defaults, with no restart needed.
 """
 
 import json
-import os
 
 from munch import config
+from munch.paths import user_data_path
 
-_TUNING_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "tuning.json")
+_TUNING_PATH = user_data_path("tuning.json")
 
 DEFAULTS = {
     "cursor_smoothing_alpha": config.CURSOR_SMOOTHING_ALPHA,

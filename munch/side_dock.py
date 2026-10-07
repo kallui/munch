@@ -31,6 +31,8 @@ _WAVE_SHAPE = (0.55, 0.8, 1.0, 0.8, 0.55)  # per-bar height multipliers, peaked 
 _NOISE_GATE = 0.08  # levels below this draw as flat bars, i.e. "hearing nothing"
 
 _CAPTION_WIDTH = 380
+_PROGRESS_H = 12
+_ERROR_MS = 5000  # how long a "download failed" message stays up
 _CAPTION_MAX_CHARS = 160  # longer previews show only their tail, so the bubble can't grow unbounded
 _TOOLTIP_FADE_MS = 100
 
@@ -60,12 +62,17 @@ def _dots_icon(phase):
 
 def _floating_window(master, bg):
     win = tk.Toplevel(master)
+    # Hidden from the very first moment, before Windows ever shows it.
+    # These are created at app startup; if one appeared even briefly it
+    # would take the focus Windows grants a newly launched app, then hand
+    # it back to whatever launched MUNCH once hidden — e.g. Explorer
+    # jumping back in front of the main window right after it opens.
+    win.withdraw()
     win.overrideredirect(True)
     win.attributes("-topmost", True)
     win.attributes("-alpha", 0.0)  # before prevent_activation — see win_utils.set_alpha
     win.configure(bg=bg)
     win_utils.prevent_activation(win)  # never pull focus off the user's textbox
-    win.withdraw()
     return win
 
 
@@ -108,7 +115,12 @@ class SideDock:
         self._status_label = tk.Label(
             caption_body, font=FONT_SUB, bg="white", fg=INK, padx=12, anchor="w",
         )
+        self._progress_bar = tk.Canvas(
+            caption_body, width=_CAPTION_WIDTH - 24 - 2 * BORDER_W, height=_PROGRESS_H,
+            bg="white", highlightthickness=0,
+        )
         self._caption_text = ""
+        self._download_fraction = 0.0
 
         self._mic_state = "idle"
         self._levels = deque([0.0] * len(_WAVE_SHAPE), maxlen=len(_WAVE_SHAPE))
@@ -150,10 +162,19 @@ class SideDock:
 
     # ------------------------------------------------------------------
     def set_mic_state(self, state):
-        """state: "idle", "recording" (listening), or "transcribing"
-        (recording stopped, final text being produced)."""
+        """state: "idle", "recording" (listening), "transcribing"
+        (recording stopped, final text being produced), or "downloading"
+        (first-use speech model download)."""
         self._mic_state = state
-        self._mic_btn.set_color({"recording": _RECORDING, "transcribing": YELLOW}.get(state, "white"))
+        self._mic_btn.set_color(
+            {"recording": _RECORDING, "transcribing": YELLOW, "downloading": YELLOW}.get(state, "white")
+        )
+        if state == "downloading":
+            self._dot_phase = 0
+            self._mic_btn.set_icon(_dots_icon(self._dot_phase))
+            self._caption_text = ""
+            self.set_download_progress(0.0)
+            return
         if state == "recording":
             self._levels.extend([0.0] * len(_WAVE_SHAPE))
             self._mic_btn.set_icon(_wave_icon(self._levels))
@@ -178,7 +199,7 @@ class SideDock:
         """Call every frame; redraws the mic icon at a steady rate. `level`
         is the live 0-1 input loudness while recording (ignored otherwise)."""
         now = time.monotonic()
-        if self._mic_state == "idle" or now - self._last_anim < _ANIM_INTERVAL:
+        if self._mic_state in ("idle", "error") or now - self._last_anim < _ANIM_INTERVAL:
             return
         self._last_anim = now
         if self._mic_state == "recording":
@@ -190,9 +211,40 @@ class SideDock:
             if phase != self._dot_phase:
                 self._dot_phase = phase
                 self._mic_btn.set_icon(_dots_icon(phase))
-                self._status_label.configure(text=self._processing_text())
+                if self._mic_state == "transcribing":
+                    self._status_label.configure(text=self._processing_text())
 
     # ------------------------------------------------------------------
+    def set_download_progress(self, fraction):
+        """Shows first-use model download progress (0-1) in the bubble."""
+        self._download_fraction = fraction
+        self._status_label.configure(text=f"Downloading speech model… {int(fraction * 100)}%")
+        bar = self._progress_bar
+        bar.delete("all")
+        w, h = int(bar.cget("width")), _PROGRESS_H
+        bar.create_rectangle(1, 1, w - 1, h - 1, fill="white", outline=INK, width=2)
+        if fraction > 0:
+            bar.create_rectangle(1, 1, 1 + (w - 2) * fraction, h - 1, fill=INK, outline="")
+        self._layout_caption()
+
+    def show_download_failed(self):
+        """Puts the mic back to its normal look, with a short-lived
+        explanation in the bubble; clicking the mic simply retries."""
+        self._mic_state = "error"
+        self._mic_btn.set_color("white")
+        self._mic_btn.set_icon(self._mic_icon)
+        self._status_label.configure(
+            text="Couldn't download the speech model.\nCheck your internet connection and try again.",
+            justify="left",
+        )
+        self._layout_caption()
+        self._win.after(_ERROR_MS, self._hide_error)
+
+    def _hide_error(self):
+        if self._mic_state == "error":  # a retry may already be using the bubble
+            self._mic_state = "idle"
+            self.hide_caption()
+
     def set_caption(self, text):
         if len(text) > _CAPTION_MAX_CHARS:
             text = "…" + text[-_CAPTION_MAX_CHARS:].lstrip()
@@ -206,10 +258,14 @@ class SideDock:
         # "Processing" line while the final text is being produced.
         self._caption_label.pack_forget()
         self._status_label.pack_forget()
+        self._progress_bar.pack_forget()
         if self._caption_text:
             self._caption_label.pack(fill="x")
-        if self._mic_state == "transcribing":
+        if self._mic_state in ("transcribing", "error"):
             self._status_label.pack(fill="x", pady=(0 if self._caption_text else 8, 8))
+        elif self._mic_state == "downloading":
+            self._status_label.pack(fill="x", pady=(8, 4))
+            self._progress_bar.pack(padx=12, pady=(0, 10), anchor="w")
         self._caption.update_idletasks()
         h = self._caption.winfo_reqheight()
         self._caption.geometry(f"{_CAPTION_WIDTH}x{h}+{self._x - _CAPTION_WIDTH - 12}+{self._mic_center_y - h // 2}")

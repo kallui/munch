@@ -8,9 +8,10 @@ fingers across actions, one finger per action, no finger shared.
 """
 
 import json
-import os
 
-_BINDINGS_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "bindings.json")
+from munch.paths import user_data_path
+
+_BINDINGS_PATH = user_data_path("bindings.json")
 
 ACTIONS = ("left", "right", "double", "middle")
 FINGERS = ("index", "middle", "ring", "pinky")
