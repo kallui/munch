@@ -8,6 +8,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/kallui/munch/releases/latest"><img alt="Download now" src="https://img.shields.io/badge/Download-now-FFD400"></a>
   <a href="https://github.com/kallui/munch/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/kallui/munch?color=FF3DAE"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows-3A86FF">
   <img alt="Tracking" src="https://img.shields.io/badge/tracking-on%20device-06D6A0">
