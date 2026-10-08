@@ -45,6 +45,10 @@ The info button in the window lists the live gesture map. Settings is where you 
 
 One hand at a time. Pinch bindings below are the defaults; any pinch can be swapped onto any click in Settings. Scroll and the wake pose stay fixed.
 
+<p align="center">
+  <img src="assets/MUNCH%20Gestures%20Cheat%20Sheet%20Guide.png" alt="MUNCH Gestures cheat sheet" width="720">
+</p>
+
 | Gesture | Default action |
 | --- | --- |
 | Open palm, fingers spread, hold ~2s | Arm. Until this finishes, the hand is ignored. |
