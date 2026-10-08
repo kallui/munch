@@ -17,6 +17,33 @@
 
 Control your Windows PC with hand gestures while you’re eating, your hands are dirty, or you just don’t want to touch your mouse and keyboard.
 
+## Showcase
+
+<p align="center">
+  <img src="assets/gifs/Click.gif" alt="Pinch to click a YouTube video" width="720"><br>
+  Pinch to click.
+</p>
+
+<p align="center">
+  <img src="assets/gifs/Scroll.gif" alt="Finger gun scrolling a YouTube page" width="720"><br>
+  Finger gun to scroll.
+</p>
+
+<p align="center">
+  <img src="assets/gifs/Drag.gif" alt="Hold a pinch to drag files in the editor" width="720"><br>
+  Hold the pinch to drag.
+</p>
+
+<p align="center">
+  <img src="assets/gifs/Keyboard.gif" alt="Pinch-typing on the on-screen keyboard" width="720"><br>
+  Type using the on screen keyboard.
+</p>
+
+<p align="center">
+  <img src="assets/gifs/Osu.gif" alt="Playing osu! with a pinch" width="720"><br>
+  Play games...?
+</p>
+
 ## Download
 
 1. Download **`MUNCH-Setup-<version>.exe`** from the [latest release](https://github.com/kallui/munch/releases/latest).
