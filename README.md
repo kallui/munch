@@ -17,6 +17,8 @@
 
 Control your Windows PC with hand gestures while you’re eating, your hands are dirty, or you just don’t want to touch your mouse and keyboard.
 
+With standby and wake-up features, MUNCH only tracks when you want it to.
+
 ## Showcase
 
 <p align="center">
